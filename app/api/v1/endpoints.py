@@ -43,23 +43,20 @@ async def chat_endpoint(payload: ChatRequest):
     context = rag.format_chunks_for_context(top_chunks)
     user_prompt = f"Here is the relevant lesson chunk data:\n\n{context}\n\nQuestion: {question}\n\nPlease answer the teacher's question using only the information in the chunk(s) above."
 
-    async def stream_response():
-        try:
-            response = rag.openai_client.chat.completions.create(
-                model=settings.AZURE_OPENAI_DEPLOYMENT,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7,
-                max_tokens=800,
-                stream=True
-            )
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content is not None:
-                    token = chunk.choices[0].delta.content
-                    yield token
-        except Exception as e:
-            yield f"\n[Error: {str(e)}]"
+    # Instead of streaming, get the full answer and return as JSON
+    try:
+        response = rag.openai_client.chat.completions.create(
+            model=settings.AZURE_OPENAI_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=800,
+            stream=False
+        )
+        answer = response.choices[0].message.content if response.choices else "No answer generated."
+    except Exception as e:
+        answer = f"[Error: {str(e)}]"
 
-    return StreamingResponse(stream_response(), media_type="text/plain")
+    return {"answer": answer}
