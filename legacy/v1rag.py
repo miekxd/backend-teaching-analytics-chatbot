@@ -182,33 +182,3 @@ class SupabaseRAG:
         except Exception as e:
             print(f"❌ Error loading data_summary from Supabase: {e}")
             return None
-
-    def answer_question(self, question: str) -> str:
-        """
-        Hybrid approach: Uses data_summary for summary/statistics questions, and chunk retrieval for detailed/contextual questions.
-        Combines both for ambiguous or broad questions.
-        """
-        summary_keywords = [
-            "how many", "total", "overall", "summary", "percentage", "most", "least", "statistics", "insights"
-        ]
-        use_summary = any(kw in question.lower() for kw in summary_keywords)
-
-        answer_parts = []
-
-        if use_summary:
-            summary = self.get_data_summary()
-            if summary:
-                answer_parts.append("**Lesson Summary:**\n" + summary)
-            else:
-                answer_parts.append("No summary data available for this file.")
-
-        # Always try to retrieve relevant chunks for detailed/contextual answers
-        chunks = self.get_chunks_from_supabase()
-        if chunks:
-            # Use your existing semantic search or chunk analysis here
-            # For demonstration, let's just add a placeholder
-            answer_parts.append("**Relevant Examples from Transcript:**\n[chunk-based answer here]")
-        else:
-            answer_parts.append("No transcript chunks available for this file.")
-
-        return "\n\n".join(answer_parts)
