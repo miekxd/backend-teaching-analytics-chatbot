@@ -6,3 +6,7 @@ scikit-learn
 numpy
 python-dotenv
 pydantic-settings 
+langchain
+langchain-openai
+langchain-community
+langchain-core
