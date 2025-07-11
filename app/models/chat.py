@@ -6,8 +6,7 @@ class ChatRequest(BaseModel):
     question: str
     top_k: Optional[int] = 3
 
-# Enhanced request model for general chat with file context
-class EnhancedChatRequest(BaseModel):
+class UnifiedChatRequest(BaseModel):
     message: str
     file_ids: List[int]  # Required for lesson context
     conversation_history: List[Dict[str, str]] = []  # Optional chat history
@@ -29,3 +28,6 @@ class EnhancedChatErrorResponse(BaseModel):
     confidence: float
     routing_reason: str
     error: str
+
+class UnifiedResponse(BaseModel):
+    response: str

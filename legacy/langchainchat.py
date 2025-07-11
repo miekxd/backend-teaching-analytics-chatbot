@@ -254,7 +254,7 @@ async def langchain_chat_endpoint(payload: ChatRequest):
     
     file_ids = payload.file_id
     question = payload.question
-    top_k = payload.top_k or 3
+    top_k = payload.top_k or 5
     
     if not file_ids or not question:
         return JSONResponse({"error": "file_id and question are required"}, status_code=400)
