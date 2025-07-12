@@ -183,6 +183,7 @@ You may receive:
    - Be transparent that you're providing general guidance rather than specific evidence
 4. Focus on being helpful and actionable regardless of data availability
 5. Connect your response to relevant Singapore Teaching Practice areas
+6. Use markdown formatting for output text
 </analysis_instructions>""")
         ])
         

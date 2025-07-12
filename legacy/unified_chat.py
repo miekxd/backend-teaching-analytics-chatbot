@@ -62,7 +62,7 @@ async def unified_streaming_generator(
     conversation_history: List[Dict[str, str]] = None
 ) -> AsyncGenerator[str, None]:
     """
-    Unified streaming generator with markdown-aware streaming that mimics OpenAI's approach
+    Unified streaming generator with markdown-preserving streaming for general responses
     """
     try:
         # First, get the flag decision from general assistant (non-streaming)
@@ -84,105 +84,35 @@ async def unified_streaming_generator(
             ):
                 yield chunk  # Real streaming chunks
         else:
-            # Low specificity - simulate token-aware streaming like OpenAI
-            response_text = general_response["response"]
+            # Low specificity - preserve markdown while streaming
+            response_text = general_response.get("response", "")
             
-            # Create chunks that respect markdown boundaries
-            chunks = create_markdown_aware_chunks(response_text)
+            # Debug: Ensure we're working with string content
+            if isinstance(response_text, dict):
+                response_text = str(response_text)
             
-            delay = 0.03  # Faster delay for more natural flow
+            # Stream by sentences or logical chunks instead of words to preserve formatting
+            import re
             
-            for chunk in chunks:
-                yield chunk
-                await asyncio.sleep(delay)
+            # Split by sentences while preserving markdown structure
+            sentences = re.split(r'(?<=[.!?])\s+', response_text)
+            
+            delay = 0.1  # Slightly longer delay for sentence-based streaming
+            
+            for i, sentence in enumerate(sentences):
+                if sentence.strip():  # Skip empty sentences
+                    # Add back the space that was removed by split
+                    if i < len(sentences) - 1:
+                        sentence += " "
+                    
+                    yield sentence
+                    
+                    # Add delay except for the last sentence
+                    if i < len(sentences) - 1:
+                        await asyncio.sleep(delay)
         
     except Exception as e:
-        yield f"Error: {str(e)}"
-
-def create_markdown_aware_chunks(text: str) -> List[str]:
-    """
-    Creates streaming chunks that preserve markdown syntax, similar to OpenAI's approach
-    """
-    import re
-    
-    chunks = []
-    
-    # Split by lines but keep the line breaks
-    lines = text.split('\n')
-    
-    for i, line in enumerate(lines):
-        if not line.strip():
-            # Empty line
-            if i < len(lines) - 1:  # Not the last line
-                chunks.append('\n')
-            continue
-            
-        # Detect markdown elements that should be kept together
-        if re.match(r'^#{1,6}\s+', line):  # Headers
-            chunks.append(line)
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        elif re.match(r'^\d+\.\s+', line):  # Numbered lists
-            # Split numbered list items more carefully
-            match = re.match(r'^(\d+\.\s+)', line)
-            if match:
-                prefix = match.group(1)
-                content = line[len(prefix):]
-                chunks.append(prefix)
-                chunks.extend(create_text_chunks(content, 4))
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        elif re.match(r'^[-*+]\s+', line):  # Bullet lists
-            match = re.match(r'^([-*+]\s+)', line)
-            if match:
-                prefix = match.group(1)
-                content = line[len(prefix):]
-                chunks.append(prefix)
-                chunks.extend(create_text_chunks(content, 4))
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        elif line.startswith('```'):  # Code blocks
-            chunks.append(line)
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        elif line.startswith('>'):  # Blockquotes
-            chunks.append(line)
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        else:
-            # Regular text - break into smaller chunks
-            chunks.extend(create_text_chunks(line, 4))
-            if i < len(lines) - 1:
-                chunks.append('\n')
-    
-    return chunks
-
-def create_text_chunks(text: str, chunk_size: int) -> List[str]:
-    """
-    Break regular text into word-based chunks while preserving punctuation
-    """
-    if not text.strip():
-        return []
-        
-    words = text.split()
-    chunks = []
-    
-    for i in range(0, len(words), chunk_size):
-        word_chunk = words[i:i + chunk_size]
-        chunk_text = " ".join(word_chunk)
-        
-        # Add space after chunk unless it's the last chunk
-        if i + chunk_size < len(words):
-            chunk_text += " "
-            
-        chunks.append(chunk_text)
-    
-    return chunks
+        yield f"**Error:** {str(e)}"
 
 @router.post("/unified_chat_streaming")
 async def unified_chat_streaming_endpoint(request: UnifiedChatRequest):
@@ -250,7 +180,7 @@ async def unified_streaming_generator_with_metadata(
         if flag_specific > 0.5:
             # High specificity - real RAG streaming
             async for chunk in rag_assistant.get_response_stream(
-                semantic_query=general_response['response'],
+                semantic_query=general_response['response'],  # FIXED: Changed from 'message' to 'response'
                 user_message=user_message,
                 file_ids=file_ids,
                 conversation_history=conversation_history
@@ -262,7 +192,12 @@ async def unified_streaming_generator_with_metadata(
                 yield f"data: {json.dumps(content_data)}\n\n"
         else:
             # Low specificity - simulated streaming
-            response_text = general_response["response"]
+            response_text = general_response.get("response", "")  # FIXED: Changed from 'message' to 'response'
+            
+            # Debug: Ensure we're working with string content
+            if isinstance(response_text, dict):
+                response_text = str(response_text)
+                
             words = response_text.split()
             
             chunk_size = 4
@@ -297,6 +232,7 @@ async def unified_streaming_generator_with_metadata(
             "error": str(e)
         }
         yield f"data: {json.dumps(error_data)}\n\n"
+
 
 @router.post("/unified_chat_streaming_with_metadata")
 async def unified_chat_streaming_with_metadata_endpoint(request: UnifiedChatRequest):
