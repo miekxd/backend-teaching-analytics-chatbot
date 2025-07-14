@@ -6,23 +6,27 @@ import json
 from app.models.chat import (UnifiedResponse, UnifiedChatRequest)
 from app.services.rag_specific import rag_assistant
 from app.services.general import general_assistant
+from app.services.intent_analyzer import intent_analyzer
+import logging
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 @router.post("/unified_chat", response_model=UnifiedResponse)
 async def unified_chat_endpoint(request: UnifiedChatRequest):
     """
-    Enhanced teaching assistant endpoint with lesson context and RAG routing
+    Unified teaching assistant endpoint with intelligent routing
     
     Features:
-    - Access to lesson summaries for context
-    - Intelligent detection of questions needing detailed analysis  
-    - Flag-based routing suggestions for RAG
+    - Intent analysis for smart routing between general and RAG assistants
+    - Access to lesson summaries and detailed transcripts
+    - Class period filtering (beginning/middle/end)
     - Singapore Teaching Practice framework awareness
     
     Example requests:
-    - "How did my lesson go?" → General response with lesson summary
-    - "Show me the first 15 minutes" → Flags for RAG routing
+    - "How did my lesson go?" → General assistant with lesson summary
+    - "Show me examples from the beginning of the lesson" → RAG assistant with class period filtering
     """
     
     user_message = request.message.strip()
@@ -35,26 +39,40 @@ async def unified_chat_endpoint(request: UnifiedChatRequest):
         return JSONResponse({"error": "file_ids are required for lesson context"}, status_code=400)
     
     try:
-        general_response = await general_assistant.get_response(
+        # Step 1: Analyze intent to determine routing
+        intent_analysis = await intent_analyzer.analyze_intent(
             user_message=user_message,
             file_ids=file_ids,
             conversation_history=request.conversation_history
         )
         
-        if general_response['flag_specific'] > 0.5:
-            # If flagged for RAG, route to RAG assistant
-            rag_response = await rag_assistant.get_response(
-                semantic_query=general_response['response'],
+        agent_to_use = intent_analysis.get("agent_to_use", "general_assistant")
+        class_period = intent_analysis.get("class_period")
+        transformed_query = intent_analysis.get("transformed_query", user_message)
+        
+        # Step 2: Route to appropriate assistant
+        if agent_to_use == "rag_assistant":
+            # Use RAG assistant with class period filtering
+            response = await rag_assistant.get_response(
+                semantic_query=transformed_query,
+                user_message=user_message,
+                file_ids=file_ids,
+                class_period=class_period,
+                conversation_history=request.conversation_history
+            )
+        else:
+            # Use general assistant
+            response = await general_assistant.get_response(
                 user_message=user_message,
                 file_ids=file_ids,
                 conversation_history=request.conversation_history
             )
-            return UnifiedResponse(response=rag_response)
         
-        return UnifiedResponse(response=general_response["response"])
+        return UnifiedResponse(response=response)
     
     except Exception as e:
-        return JSONResponse({"error": f"Enhanced chat error: {str(e)}"}, status_code=500)
+        logger.error(f"Unified chat error: {str(e)}")
+        return JSONResponse({"error": f"Chat error: {str(e)}"}, status_code=500)
 
 async def unified_streaming_generator(
     user_message: str, 
@@ -62,135 +80,54 @@ async def unified_streaming_generator(
     conversation_history: List[Dict[str, str]] = None
 ) -> AsyncGenerator[str, None]:
     """
-    Unified streaming generator with markdown-aware streaming that mimics OpenAI's approach
+    Unified streaming generator with intelligent routing and markdown-aware streaming
     """
     try:
-        # First, get the flag decision from general assistant (non-streaming)
-        general_response = await general_assistant.get_response(
+        # Step 1: Analyze intent to determine routing
+        intent_analysis = await intent_analyzer.analyze_intent(
             user_message=user_message,
             file_ids=file_ids,
             conversation_history=conversation_history
         )
         
-        flag_specific = general_response.get('flag_specific', 0.0)
+        agent_to_use = intent_analysis.get("agent_to_use", "general_assistant")
+        class_period = intent_analysis.get("class_period")
+        transformed_query = intent_analysis.get("transformed_query", user_message)
         
-        if flag_specific > 0.5:
-            # High specificity - use real RAG streaming
+        print(f"Intent Analysis: {json.dumps(intent_analysis, indent=2)}")
+        # Step 2: Route to appropriate assistant with streaming
+        if agent_to_use == "rag_assistant":
+            # Use RAG assistant streaming with class period filtering
             async for chunk in rag_assistant.get_response_stream(
-                semantic_query=general_response['response'],
+                semantic_query=transformed_query,
+                user_message=user_message,
+                file_ids=file_ids,
+                class_period=class_period,
+                conversation_history=conversation_history
+            ):
+                yield chunk  # Real streaming chunks from RAG
+        else:
+            # Use general assistant with simulated streaming
+            async for chunk in general_assistant.get_response_stream(
                 user_message=user_message,
                 file_ids=file_ids,
                 conversation_history=conversation_history
             ):
-                yield chunk  # Real streaming chunks
-        else:
-            # Low specificity - simulate token-aware streaming like OpenAI
-            response_text = general_response["response"]
-            
-            # Create chunks that respect markdown boundaries
-            chunks = create_markdown_aware_chunks(response_text)
-            
-            delay = 0.03  # Faster delay for more natural flow
-            
-            for chunk in chunks:
-                yield chunk
-                await asyncio.sleep(delay)
+                yield chunk  # Real streaming chunks from general assistant
         
     except Exception as e:
         yield f"Error: {str(e)}"
 
-def create_markdown_aware_chunks(text: str) -> List[str]:
-    """
-    Creates streaming chunks that preserve markdown syntax, similar to OpenAI's approach
-    """
-    import re
-    
-    chunks = []
-    
-    # Split by lines but keep the line breaks
-    lines = text.split('\n')
-    
-    for i, line in enumerate(lines):
-        if not line.strip():
-            # Empty line
-            if i < len(lines) - 1:  # Not the last line
-                chunks.append('\n')
-            continue
-            
-        # Detect markdown elements that should be kept together
-        if re.match(r'^#{1,6}\s+', line):  # Headers
-            chunks.append(line)
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        elif re.match(r'^\d+\.\s+', line):  # Numbered lists
-            # Split numbered list items more carefully
-            match = re.match(r'^(\d+\.\s+)', line)
-            if match:
-                prefix = match.group(1)
-                content = line[len(prefix):]
-                chunks.append(prefix)
-                chunks.extend(create_text_chunks(content, 4))
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        elif re.match(r'^[-*+]\s+', line):  # Bullet lists
-            match = re.match(r'^([-*+]\s+)', line)
-            if match:
-                prefix = match.group(1)
-                content = line[len(prefix):]
-                chunks.append(prefix)
-                chunks.extend(create_text_chunks(content, 4))
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        elif line.startswith('```'):  # Code blocks
-            chunks.append(line)
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        elif line.startswith('>'):  # Blockquotes
-            chunks.append(line)
-            if i < len(lines) - 1:
-                chunks.append('\n')
-                
-        else:
-            # Regular text - break into smaller chunks
-            chunks.extend(create_text_chunks(line, 4))
-            if i < len(lines) - 1:
-                chunks.append('\n')
-    
-    return chunks
-
-def create_text_chunks(text: str, chunk_size: int) -> List[str]:
-    """
-    Break regular text into word-based chunks while preserving punctuation
-    """
-    if not text.strip():
-        return []
-        
-    words = text.split()
-    chunks = []
-    
-    for i in range(0, len(words), chunk_size):
-        word_chunk = words[i:i + chunk_size]
-        chunk_text = " ".join(word_chunk)
-        
-        # Add space after chunk unless it's the last chunk
-        if i + chunk_size < len(words):
-            chunk_text += " "
-            
-        chunks.append(chunk_text)
-    
-    return chunks
-
 @router.post("/unified_chat_streaming")
 async def unified_chat_streaming_endpoint(request: UnifiedChatRequest):
     """
-    Enhanced teaching assistant streaming endpoint with simulated word-by-word streaming
+    Unified teaching assistant streaming endpoint with intelligent routing
     
-    Returns plain text stream with word-by-word simulation for general responses
-    and real streaming for RAG responses
+    Features:
+    - Intent analysis for smart routing
+    - Real streaming for both general and RAG responses
+    - Class period filtering for targeted lesson analysis
+    - Markdown-aware streaming output
     """
     
     user_message = request.message.strip()
@@ -219,89 +156,15 @@ async def unified_chat_streaming_endpoint(request: UnifiedChatRequest):
         )
     
     except Exception as e:
+        logger.error(f"Streaming error: {str(e)}")
         return JSONResponse({"error": f"Streaming error: {str(e)}"}, status_code=500)
 
-async def unified_streaming_generator_with_metadata(
-    user_message: str, 
-    file_ids: List[int], 
-    conversation_history: List[Dict[str, str]] = None
-) -> AsyncGenerator[str, None]:
+@router.post("/intent_analysis")
+async def intent_analysis_endpoint(request: UnifiedChatRequest):
     """
-    Alternative: Streaming generator that includes flag_specific metadata
-    """
-    try:
-        # First, get the flag decision from general assistant
-        general_response = await general_assistant.get_response(
-            user_message=user_message,
-            file_ids=file_ids,
-            conversation_history=conversation_history
-        )
-        
-        flag_specific = general_response.get('flag_specific', 0.0)
-        
-        # Send metadata first
-        metadata = {
-            "type": "metadata",
-            "flag_specific": flag_specific,
-            "using_rag": flag_specific > 0.5
-        }
-        yield f"data: {json.dumps(metadata)}\n\n"
-        
-        if flag_specific > 0.5:
-            # High specificity - real RAG streaming
-            async for chunk in rag_assistant.get_response_stream(
-                semantic_query=general_response['response'],
-                user_message=user_message,
-                file_ids=file_ids,
-                conversation_history=conversation_history
-            ):
-                content_data = {
-                    "type": "content",
-                    "chunk": chunk
-                }
-                yield f"data: {json.dumps(content_data)}\n\n"
-        else:
-            # Low specificity - simulated streaming
-            response_text = general_response["response"]
-            words = response_text.split()
-            
-            chunk_size = 4
-            delay = 0.08
-            
-            for i in range(0, len(words), chunk_size):
-                word_chunk = words[i:i + chunk_size]
-                chunk_text = " ".join(word_chunk)
-                
-                if i + chunk_size < len(words):
-                    chunk_text += " "
-                
-                content_data = {
-                    "type": "content",
-                    "chunk": chunk_text
-                }
-                yield f"data: {json.dumps(content_data)}\n\n"
-                
-                if i + chunk_size < len(words):
-                    await asyncio.sleep(delay)
-        
-        # Send completion with flag_specific
-        completion = {
-            "type": "complete",
-            "flag_specific": flag_specific
-        }
-        yield f"data: {json.dumps(completion)}\n\n"
-        
-    except Exception as e:
-        error_data = {
-            "type": "error",
-            "error": str(e)
-        }
-        yield f"data: {json.dumps(error_data)}\n\n"
-
-@router.post("/unified_chat_streaming_with_metadata")
-async def unified_chat_streaming_with_metadata_endpoint(request: UnifiedChatRequest):
-    """
-    Alternative endpoint that includes flag_specific metadata for conversation history building
+    Endpoint to analyze intent and get routing decision without generating response
+    
+    Useful for debugging and understanding routing decisions
     """
     
     user_message = request.message.strip()
@@ -310,24 +173,18 @@ async def unified_chat_streaming_with_metadata_endpoint(request: UnifiedChatRequ
     if not user_message:
         return JSONResponse({"error": "Message cannot be empty"}, status_code=400)
     
-    if not file_ids:
-        return JSONResponse({"error": "file_ids are required for lesson context"}, status_code=400)
-    
     try:
-        return StreamingResponse(
-            unified_streaming_generator_with_metadata(
-                user_message=user_message,
-                file_ids=file_ids,
-                conversation_history=request.conversation_history
-            ),
-            media_type="text/event-stream",  # SSE format for metadata
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*",
-            }
+        intent_analysis = await intent_analyzer.analyze_intent(
+            user_message=user_message,
+            file_ids=file_ids or [],
+            conversation_history=request.conversation_history
         )
+        
+        return JSONResponse({
+            "intent_analysis": intent_analysis,
+            "routing_explanation": intent_analyzer.get_routing_explanation(intent_analysis) if hasattr(intent_analyzer, 'get_routing_explanation') else "Analysis completed"
+        })
     
     except Exception as e:
-        return JSONResponse({"error": f"Streaming error: {str(e)}"}, status_code=500)
+        logger.error(f"Intent analysis error: {str(e)}")
+        return JSONResponse({"error": f"Intent analysis error: {str(e)}"}, status_code=500)

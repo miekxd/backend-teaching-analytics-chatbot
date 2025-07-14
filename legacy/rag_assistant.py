@@ -33,13 +33,23 @@ class RAGTeachingAssistant:
     
     Features:
     1. Semantic search across lesson chunks
-    2. Class period filtering (beginning/middle/end)
-    3. Detailed utterance analysis
+    2. Time-based filtering (first X minutes, last X minutes, ranges)
+    3. Detailed utterance analysis with timestamps
     4. Singapore Teaching Practice framework alignment
     5. Streaming text responses
     """
     
-    def __init__(self):  
+    def __init__(self):
+        # Azure OpenAI connection for LangChain
+        self.llm = AzureChatOpenAI(
+            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            api_key=settings.AZURE_OPENAI_API_KEY,
+            api_version=settings.AZURE_OPENAI_API_VERSION,
+            azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_RAG,
+            temperature=0.2,
+            max_tokens=800
+        )
+        
         # OpenAI client for embeddings
         self.openai_client = AzureOpenAI(
             azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
@@ -50,7 +60,7 @@ class RAGTeachingAssistant:
         # Supabase client for accessing chunks
         self.supabase = get_supabase_client()
         
-        # System prompt for RAG responses (updated to remove timestamp references)
+        # System prompt for RAG responses
         self.system_prompt = """You are a specialized AI teaching coach for Singapore educators, designed to provide detailed, evidence-based analysis of classroom lesson transcripts.
 
 <role>
@@ -59,7 +69,7 @@ You are an expert in the Singapore Teaching Practice framework with deep knowled
 
 <data_context>
 You may receive:
-- Detailed lesson chunks from specific class periods (beginning/middle/end) or entire lessons
+- Detailed lesson chunks with timestamps and utterances (preferred for specific analysis)
 - Limited or no chunk data (requiring inference and general guidance)
 - Lesson summaries and contextual information
 </data_context>
@@ -77,6 +87,15 @@ You may receive:
 </teaching_areas>
 </singapore_teaching_framework>
 
+<response_approach>
+<when_chunks_available>
+- ALWAYS cite specific utterances with exact timestamps [MM:SS]
+- Quote directly when highlighting specific teacher or student language
+- Reference observable behaviors and interactions from the transcript
+- Connect evidence to relevant Singapore Teaching Practice areas
+- Focus on what is explicitly demonstrated in the data
+</when_chunks_available>
+
 <when_chunks_limited_or_unavailable>
 - Draw from lesson summary and any available contextual information
 - Make reasonable educational inferences based on Singapore Teaching Practice framework
@@ -89,7 +108,7 @@ You may receive:
 
 <analysis_requirements>
 <evidence_standards>
-- With chunks: Always cite specific utterances and behaviors
+- With chunks: Always cite timestamps and specific utterances
 - Without chunks: Use available context and educational expertise
 - Clearly indicate the basis for your response (evidence vs. inference)
 - Connect observations or suggestions to Singapore Teaching Practice areas
@@ -98,7 +117,7 @@ You may receive:
 
 <response_structure>
 1. Assess what information is available in the provided data
-2. If chunks available: Provide evidence-based analysis with specific quotes
+2. If chunks available: Provide evidence-based analysis with timestamps
 3. If chunks unavailable: Offer informed guidance based on context and expertise
 4. Connect to relevant Singapore Teaching Practice areas
 5. Provide actionable feedback appropriate to the information available
@@ -107,7 +126,7 @@ You may receive:
 
 <response_guidelines>
 <evidence_citation>
-- With detailed chunks: "You said '[exact quote]'" or "When you mentioned..."
+- With detailed chunks: "At [MM:SS], you said '[exact quote]'"
 - With limited data: "Based on the lesson context..." or "Typically in this situation..."
 - Always be transparent about the basis for your response
 </evidence_citation>
@@ -135,31 +154,49 @@ You may receive:
 - Be transparent about the basis for your response
 - Focus on actionable insights for teacher development
 - Maintain constructive, supportive tone
-- Use markdown formatting for clear structure
 </output_requirements>"""
-    def _get_llm(self, streaming: bool = False) -> AzureChatOpenAI:
-        """Get configured LLM instance with consistent settings"""
-        return AzureChatOpenAI(
-            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-            api_key=settings.AZURE_OPENAI_API_KEY,
-            api_version=settings.AZURE_OPENAI_API_VERSION,
-            azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_RAG,  # Use RAG deployment instead of GENERAL
-            temperature=0.2,
-            max_tokens=800,  # Higher token limit for RAG responses
-            streaming=streaming
-    )
+
+        # Prompt template for RAG responses
+        self.rag_prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            ("human", """<lesson_overview>
+{lesson_summary}
+</lesson_overview>
+
+<lesson_chunks>
+{context}
+</lesson_chunks>
+
+<teacher_question>
+{question}
+</teacher_question>
+
+<analysis_instructions>
+1. Examine what data is available (detailed chunks, summary only, or limited information)
+2. If detailed chunks are provided:
+   - Cite specific utterances and behaviors with exact timestamps
+   - Provide evidence-based analysis of Singapore Teaching Practice areas
+3. If chunks are limited or unavailable:
+   - Use the lesson summary and any available context
+   - Draw from teaching expertise and Singapore Teaching Practice framework
+   - Provide practical guidance and strategies relevant to the question
+   - Be transparent that you're providing general guidance rather than specific evidence
+4. Focus on being helpful and actionable regardless of data availability
+5. Connect your response to relevant Singapore Teaching Practice areas
+6. Use markdown formatting for output text
+</analysis_instructions>""")
+        ])
         
-    def _get_chunks_from_supabase(self, file_id: int, class_period: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get chunks from Supabase for a specific file, optionally filtered by class period"""
+        # Output parser
+        self.output_parser = StrOutputParser()
+        
+        # Chain for RAG responses
+        self.rag_chain = self.rag_prompt | self.llm | self.output_parser
+    
+    def _get_chunks_from_supabase(self, file_id: int) -> List[Dict[str, Any]]:
+        """Get chunks from Supabase for a specific file"""
         try:
-            query = self.supabase.table("chunks").select("*").eq("file_id", file_id)
-            
-            # Filter by class period if provided
-            if class_period and class_period in ["beginning", "middle", "end"]:
-                query = query.eq("class_section", class_period)
-            
-            result = query.order("sequence_order").execute()
-            
+            result = self.supabase.table("chunks").select("*").eq("file_id", file_id).order("sequence_order").execute()
             if not result.data:
                 return []
             return result.data
@@ -224,6 +261,34 @@ You may receive:
             print(f"⚠️ Error parsing embedding: {e}")
             return []
     
+    def _apply_time_filters(self, question: str, chunks: List[Dict]) -> List[Dict]:
+        """Apply time-based filtering to chunks"""
+        q_lower = question.lower()
+        
+        # First X minutes
+        match_first = re.search(r'(first|initial|opening) (\d+) minute', q_lower)
+        if match_first:
+            minutes = int(match_first.group(2))
+            return [c for c in chunks if time_to_seconds(c.get('start_time', '00:00')) < minutes * 60]
+        
+        # Last X minutes  
+        match_last = re.search(r'(last|final|ending) (\d+) minute', q_lower)
+        if match_last:
+            minutes = int(match_last.group(2))
+            # Calculate cutoff based on max end time
+            max_time = max([time_to_seconds(c.get('end_time', '00:00')) for c in chunks if c.get('end_time')], default=0)
+            start_cutoff = max_time - (minutes * 60)
+            return [c for c in chunks if time_to_seconds(c.get('start_time', '00:00')) >= start_cutoff]
+        
+        # Range: from minute X to Y
+        match_range = re.search(r'from minute (\d+) to (\d+)', q_lower)
+        if match_range:
+            start_min = int(match_range.group(1))
+            end_min = int(match_range.group(2))
+            return [c for c in chunks if start_min * 60 <= time_to_seconds(c.get('start_time', '00:00')) < end_min * 60]
+        
+        return chunks
+    
     def _semantic_search(self, query: str, chunks: List[Dict[str, Any]], top_k: int = 3) -> List[Dict[str, Any]]:
         """Perform semantic search on chunks and return top chunks"""
         if not chunks:
@@ -263,7 +328,7 @@ You may receive:
         context_parts = []
         for chunk in chunks:
             chunk_info = [
-                f"Class Section: {chunk.get('class_section_label', 'Unknown Section')}",
+                f"Time: {chunk.get('start_time', 'Unknown')} - {chunk.get('end_time', 'Unknown')}",
                 f"Teaching Areas: {', '.join(chunk.get('teaching_areas', []))}",
                 f"Content: {self._get_chunk_text(chunk)}"
             ]
@@ -273,9 +338,10 @@ You may receive:
                 chunk_info.append("Detailed Utterances:")
                 for i, utterance in enumerate(chunk['utterances'], 1):
                     if isinstance(utterance, dict):
+                        timestamp = utterance.get('timestamp', '')
                         text = utterance.get('text', '')
                         area = utterance.get('area', '')
-                        chunk_info.append(f"  {i}. {text} (Area: {area})")
+                        chunk_info.append(f"  {i}. [{timestamp}] {text} (Area: {area})")
             
             context_parts.append("\n".join(chunk_info))
             context_parts.append("---")
@@ -298,22 +364,50 @@ You may receive:
         
         return "\n".join(summary_sections) if summary_sections else "No lesson summaries available."
     
-    def _build_message_history(self, conversation_history: List[Dict[str, str]], current_message: str, lesson_summaries: str, context: str) -> List:
-        """Build proper message history for LangChain with lesson context"""
-        messages = [SystemMessage(content=self.system_prompt)]
-        
-        # Add conversation history (keep last 6 messages for better context)
-        for msg in conversation_history[-6:]:
-            role = msg.get("role", "").lower()
-            content = msg.get("content", "")
+    async def get_response(self, semantic_query: str, user_message: str, file_ids: List[int], conversation_history: List[Dict[str, str]] = None, top_k: int = 5) -> str:
+        """
+        Get RAG response with detailed transcript analysis
+        Returns simple text response
+        """
+        try:
+            # Get lesson summaries (always available)
+            lesson_summaries = self._get_file_summaries(file_ids)
             
-            if role == "user" and content:
-                messages.append(HumanMessage(content=content))
-            elif role == "assistant" and content:
-                messages.append(AIMessage(content=content))
-        
-        # Add current message with lesson context (NOT system prompt)
-        current_with_context = f"""<lesson_overview>
+            # Try to get chunks - don't fail if unavailable
+            all_chunks = []
+            for fid in file_ids:
+                chunks = self._get_chunks_from_supabase(fid)
+                all_chunks.extend(chunks)
+            
+            # Process chunks if available
+            context = "No detailed transcript chunks available."
+            if all_chunks:
+                # Apply time filtering
+                filtered_chunks = self._apply_time_filters(user_message, all_chunks)
+                
+                if filtered_chunks:
+                    # Perform semantic search
+                    top_chunks = self._semantic_search(semantic_query, filtered_chunks, top_k=top_k)
+                    if top_chunks:
+                        context = self._format_chunks_for_context(top_chunks)
+            
+            # Generate response using available data
+            if conversation_history:
+                # Build message history manually for conversation context
+                messages = [SystemMessage(content=self.system_prompt)]
+                
+                # Add conversation history (limit to last 6 messages)
+                for msg in conversation_history[-3:]:
+                    role = msg.get("role", "").lower()
+                    content = msg.get("content", "")
+                    
+                    if role == "user" and content:
+                        messages.append(HumanMessage(content=content))
+                    elif role == "assistant" and content:
+                        messages.append(AIMessage(content=content))
+                
+                # Add current message with context
+                current_with_context = f"""<lesson_overview>
 {lesson_summaries}
 </lesson_overview>
 
@@ -322,13 +416,13 @@ You may receive:
 </lesson_chunks>
 
 <teacher_question>
-{current_message}
+{user_message}
 </teacher_question>
 
 <analysis_instructions>
 1. Examine what data is available (detailed chunks, summary only, or limited information)
 2. If detailed chunks are provided:
-   - Cite specific utterances and behaviors with exact quotes
+   - Cite specific utterances and behaviors with exact timestamps
    - Provide evidence-based analysis of Singapore Teaching Practice areas
 3. If chunks are limited or unavailable:
    - Use the lesson summary and any available context
@@ -337,81 +431,120 @@ You may receive:
    - Be transparent that you're providing general guidance rather than specific evidence
 4. Focus on being helpful and actionable regardless of data availability
 5. Connect your response to relevant Singapore Teaching Practice areas
-6. Use markdown formatting for output text
-7. MAKE SURE TO CITE EVIDENCE INCLUDING CLASS SECTION AND TEACHING AREAS
-</analysis_instructions>
-"""
-        messages.append(HumanMessage(content=current_with_context))
-        print(context)
-        return messages
-    
-    async def get_response(self, semantic_query: str, user_message: str, file_ids: List[int], class_period: Optional[str] = None, conversation_history: List[Dict[str, str]] = None, top_k: int = 5) -> str:
-        try:
-            # Get lesson summaries and context
-            lesson_summaries = self._get_file_summaries(file_ids)
-            
-            # Try to get chunks - filtered by class period if provided
-            all_chunks = []
-            for fid in file_ids:
-                chunks = self._get_chunks_from_supabase(fid, class_period)
-                all_chunks.extend(chunks)
-            
-            # Process chunks if available
-            context = "No detailed transcript chunks available."
-            if all_chunks:
-                top_chunks = self._semantic_search(semantic_query, all_chunks, top_k=top_k)
-                if top_chunks:
-                    context = self._format_chunks_for_context(top_chunks)
-            
-            # Use the helper function to get LLM
-            llm = self._get_llm(streaming=False)
-            
-            # Generate response using message history builder
-            messages = self._build_message_history(
-                conversation_history or [],
-                user_message, 
-                lesson_summaries, 
-                context
-            )
-            response = await llm.ainvoke(messages)
-            return response.content
+</analysis_instructions>"""
+                
+                messages.append(HumanMessage(content=current_with_context))
+                response = await self.llm.ainvoke(messages)
+                return response.content
+            else:
+                # Use RAG chain
+                response_text = await self.rag_chain.ainvoke({
+                    "lesson_summary": lesson_summaries,
+                    "context": context,
+                    "question": user_message
+                })
+                return response_text
             
         except Exception as e:
             return f"I apologize, but I encountered an error while analyzing the lesson: {str(e)}"
-
-    async def get_response_stream(self, semantic_query: str, user_message: str, file_ids: List[int], class_period: Optional[str] = None, conversation_history: List[Dict[str, str]] = None, top_k: int = 5) -> AsyncGenerator[str, None]:
+    
+    async def get_response_stream(self, semantic_query: str, user_message: str, file_ids: List[int], conversation_history: List[Dict[str, str]] = None, top_k: int = 5) -> AsyncGenerator[str, None]:
+        """
+        Stream RAG response with detailed transcript analysis
+        Yields text chunks as they're generated
+        """
         try:
-            # Get lesson summaries and context
+            # Get lesson summaries (always available)
             lesson_summaries = self._get_file_summaries(file_ids)
             
-            # Try to get chunks - filtered by class period if provided
+            # Try to get chunks - don't fail if unavailable
             all_chunks = []
             for fid in file_ids:
-                chunks = self._get_chunks_from_supabase(fid, class_period)
+                chunks = self._get_chunks_from_supabase(fid)
                 all_chunks.extend(chunks)
             
             # Process chunks if available
             context = "No detailed transcript chunks available."
             if all_chunks:
-                top_chunks = self._semantic_search(semantic_query, all_chunks, top_k=top_k)
-                if top_chunks:
-                    context = self._format_chunks_for_context(top_chunks)
+                # Apply time filtering
+                filtered_chunks = self._apply_time_filters(user_message, all_chunks)
+                
+                if filtered_chunks:
+                    # Perform semantic search
+                    top_chunks = self._semantic_search(semantic_query, filtered_chunks, top_k=top_k)
+                    if top_chunks:
+                        context = self._format_chunks_for_context(top_chunks)
             
-            # Use the helper function to get streaming LLM
-            streaming_llm = self._get_llm(streaming=True)
-            
-            # Generate streaming response using message history builder
-            messages = self._build_message_history(
-                conversation_history or [],
-                user_message, 
-                lesson_summaries, 
-                context
+            # Setup streaming LLM
+            streaming_llm = AzureChatOpenAI(
+                azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+                api_key=settings.AZURE_OPENAI_API_KEY,
+                api_version=settings.AZURE_OPENAI_API_VERSION,
+                azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_RAG,
+                temperature=0.7,
+                max_tokens=800,
+                streaming=True
             )
             
-            # Stream the response
-            async for chunk in streaming_llm.astream(messages):
-                if chunk.content:
-                    yield chunk.content
+            # Generate streaming response
+            if conversation_history:
+                # Build message history manually for conversation context
+                messages = [SystemMessage(content=self.system_prompt)]
+                
+                # Add conversation history (limit to last 6 messages)
+                for msg in conversation_history[-3:]:
+                    role = msg.get("role", "").lower()
+                    content = msg.get("content", "")
+                    
+                    if role == "user" and content:
+                        messages.append(HumanMessage(content=content))
+                    elif role == "assistant" and content:
+                        messages.append(AIMessage(content=content))
+                
+                # Add current message with context
+                current_with_context = f"""<lesson_overview>
+{lesson_summaries}
+</lesson_overview>
+
+<lesson_chunks>
+{context}
+</lesson_chunks>
+
+<teacher_question>
+{user_message}
+</teacher_question>
+
+<analysis_instructions>
+1. Examine what data is available (detailed chunks, summary only, or limited information)
+2. If detailed chunks are provided:
+   - Cite specific utterances and behaviors with exact timestamps
+   - Provide evidence-based analysis of Singapore Teaching Practice areas
+3. If chunks are limited or unavailable:
+   - Use the lesson summary and any available context
+   - Draw from teaching expertise and Singapore Teaching Practice framework
+   - Provide practical guidance and strategies relevant to the question
+   - Be transparent that you're providing general guidance rather than specific evidence
+4. Focus on being helpful and actionable regardless of data availability
+5. Connect your response to relevant Singapore Teaching Practice areas
+</analysis_instructions>"""
+                
+                messages.append(HumanMessage(content=current_with_context))
+                
+                # Stream the response
+                async for chunk in streaming_llm.astream(messages):
+                    if chunk.content:
+                        yield chunk.content
+            else:
+                # Use streaming chain
+                streaming_chain = self.rag_prompt | streaming_llm | self.output_parser
+                
+                async for chunk in streaming_chain.astream({
+                    "lesson_summary": lesson_summaries,
+                    "context": context,
+                    "question": user_message
+                }):
+                    if chunk:
+                        yield chunk
             
         except Exception as e:
             yield f"I apologize, but I encountered an error while analyzing the lesson: {str(e)}"

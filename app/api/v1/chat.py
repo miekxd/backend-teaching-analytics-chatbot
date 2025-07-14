@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse, JSONResponse
 import re
-from app.services.rag import SupabaseRAG, SYSTEM_PROMPT
+from legacy.rag import SupabaseRAG, SYSTEM_PROMPT
 from app.core.config import settings
 from app.models.chat import ChatRequest
 from app.utils.time import time_to_seconds
