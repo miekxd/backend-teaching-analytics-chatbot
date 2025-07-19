@@ -131,12 +131,12 @@ You may receive:
 
 <output_requirements>
 - Reference Singapore Teaching Practice areas by code when relevant
-- Provide helpful guidance whether based on evidence or expertise
+- Provide HELPFUL AND CONCISE guidance whether based on evidence or expertise
 - Be transparent about the basis for your response
 - Focus on actionable insights for teacher development
 - Maintain constructive, supportive tone
-- Use markdown formatting for clear structure
 </output_requirements>"""
+
     def _get_llm(self, streaming: bool = False) -> AzureChatOpenAI:
         """Get configured LLM instance with consistent settings"""
         return AzureChatOpenAI(
@@ -145,7 +145,7 @@ You may receive:
             api_version=settings.AZURE_OPENAI_API_VERSION,
             azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_RAG,  # Use RAG deployment instead of GENERAL
             temperature=0.2,
-            max_tokens=800,  # Higher token limit for RAG responses
+            max_tokens=1200,  # Higher token limit for RAG responses
             streaming=streaming
     )
         
@@ -335,10 +335,11 @@ You may receive:
    - Draw from teaching expertise and Singapore Teaching Practice framework
    - Provide practical guidance and strategies relevant to the question
    - Be transparent that you're providing general guidance rather than specific evidence
-4. Focus on being helpful and actionable regardless of data availability
+4. Focus on being helpful, actionable, and concise regardless of data availability
 5. Connect your response to relevant Singapore Teaching Practice areas
-6. Use markdown formatting for output text
+6. Use markdown formatting CONSISTENTLY for output text
 7. MAKE SURE TO CITE EVIDENCE INCLUDING CLASS SECTION AND TEACHING AREAS
+8. Always remember, your users have limited time and are lazy. Be concise and visually appealing.
 </analysis_instructions>
 """
         messages.append(HumanMessage(content=current_with_context))

@@ -144,7 +144,7 @@ Approach:
 </adaptive_response_guidelines>
 
 <output_requirements>
-- Be helpful and relevant regardless of query type
+- Be helpful, relevant, and CONCISE regardless of query type
 - Use markdown formatting for clear structure
 - Reference Singapore Teaching Practice areas when applicable
 - Provide actionable insights and strategies
