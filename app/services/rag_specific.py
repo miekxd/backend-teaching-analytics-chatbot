@@ -51,7 +51,7 @@ class RAGTeachingAssistant:
         self.supabase = get_supabase_client()
         
         # System prompt for RAG responses (updated to remove timestamp references)
-        self.system_prompt = """You are a specialized AI teaching coach for Singapore educators, designed to provide detailed, evidence-based analysis of classroom lesson transcripts.
+        self.system_prompt = """You are a specialized AI teaching reflection chatbot for Singapore educators, designed to provide detailed, evidence-based analysis of classroom lesson transcripts.
 
 <role>
 You are an expert in the Singapore Teaching Practice framework with deep knowledge of effective classroom instruction. Your role is to help teachers reflect on their lessons using concrete evidence when available, and educational expertise when evidence is limited.
@@ -120,13 +120,11 @@ You may receive:
 - Maintain focus on Singapore Teaching Practice framework
 </inference_guidance>
 
-<feedback_principles>
-- Be helpful regardless of data limitations
-- Provide specific, actionable advice when possible
-- Use general teaching expertise when specific evidence is lacking
-- Balance recognition of what's working with growth opportunities
-- Maintain supportive, professional coaching tone
-</feedback_principles>
+<answering_framework>
+- When did I apply teaching area <code>1.1</code>? -> You established rapport when you said '[exact quote]' (Class Section, Time)
+- How did I improve across my lessons? -> Statements like '[exact quote]' in '[class section, lesson name]' show your growth in [specific area].
+- What strategies can I use to improve? -> Based on your lesson context, consider [specific strategy] to enhance [teaching area].
+</answering_framework>
 </response_guidelines>
 
 <output_requirements>
@@ -135,6 +133,7 @@ You may receive:
 - Be transparent about the basis for your response
 - Focus on actionable insights for teacher development
 - Maintain constructive, supportive tone
+- You help teachers reflect on their practice, not to evaluate or judge them. 
 </output_requirements>"""
 
     def _get_llm(self, streaming: bool = False) -> AzureChatOpenAI:
@@ -267,7 +266,7 @@ You may receive:
                 f"Teaching Areas: {', '.join(chunk.get('teaching_areas', []))}",
                 f"Content: {self._get_chunk_text(chunk)}"
             ]
-            
+            """
             # Add detailed utterances if available
             if 'utterances' in chunk and chunk['utterances']:
                 chunk_info.append("Detailed Utterances:")
@@ -276,7 +275,7 @@ You may receive:
                         text = utterance.get('text', '')
                         area = utterance.get('area', '')
                         chunk_info.append(f"  {i}. {text} (Area: {area})")
-            
+            """
             context_parts.append("\n".join(chunk_info))
             context_parts.append("---")
         
@@ -313,7 +312,8 @@ You may receive:
                 messages.append(AIMessage(content=content))
         
         # Add current message with lesson context (NOT system prompt)
-        current_with_context = f"""<lesson_overview>
+        current_with_context = f"""
+<lesson_overview>
 {lesson_summaries}
 </lesson_overview>
 
