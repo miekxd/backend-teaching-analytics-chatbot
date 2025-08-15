@@ -13,3 +13,6 @@ class UnifiedChatRequest(BaseModel):
 
 class UnifiedResponse(BaseModel):
     response: str
+    needs_graph: bool = False
+    graph_type: str = None
+    graph_reason: str = None

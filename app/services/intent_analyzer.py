@@ -10,6 +10,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 
 from app.core.config import settings
 from app.db.supabase import get_supabase_client
+from app.services.graph_registry import get_graphs_for_intent_analysis, validate_graph_type
 
 class IntentAnalyzer:
     """
@@ -38,14 +39,17 @@ class IntentAnalyzer:
         self.supabase = get_supabase_client()
         
         # System prompt for intent analysis and routing
-        self.system_prompt = """You are an Intent Analyzer Agent for a Singapore educator teaching assistant system. Your primary responsibility is to analyze user questions and conversation history to determine the optimal tool combination for providing the best response.
+        self.system_prompt = f"""You are an Intent Analyzer Agent for a Singapore educator teaching assistant system. Your primary responsibility is to analyze user questions and conversation history to determine the optimal tool combination for providing the best response.
 
 <role>
-You are a routing specialist that understands teaching contexts and can efficiently direct questions to the most appropriate analysis tools and agents based on the specificity and scope of the inquiry.
-</role>
+You are a routing specialist that understands teaching contexts and can efficiently direct questions to the most appropriate analysis tools and agents based on the specificity and scopeTransform the user query into a better query that helps the following agents respond more effectively
 
 <transform_query>
-Transform the user query into a better query that helps the following agents respond more effectively
+Transform user query into a more effective query for the agents IF:
+- User question is too vague
+- User asks about data visualization
+If prompted with data visualization, intelligently transform the query for comments on the graph. DO NOT prompt your agents to create data visualization.
+Examples: "Show me a graph of xxx" -> "Comment on my xxx throughout the lesson"
 </transform_query>
 
 <forbidden_actions>
@@ -56,9 +60,10 @@ If you are unsure on how to transform the query, return the original query as tr
 <available_tools>
 <database_query>
 Time Period Selection (choose 1 of 3):
-- beginning: First 15 minutes of lesson
-- middle: Middle 15 minutes of lesson  
-- end: Last 15 minutes of lesson
+- beginning: First 10 minutes of lesson
+- middle1: Next 20 minutes of lesson
+- middle2: Next 20 minutes of lesson after middle1
+- end: Last 110 minutes of lesson
 
 Usage: When user specifies or implies a specific time period in their question
 </database_query>
@@ -76,6 +81,12 @@ Usage: When user specifies or implies a specific time period in their question
 - Use when: Questions require specific evidence, examples, or detailed transcript analysis
 </rag_assistant>
 </available_agents>
+
+<available_graphs>
+{get_graphs_for_intent_analysis()}
+
+Usage: When user requests visual representation, charts, graphs, or data visualization
+</available_graphs>
 </available_tools>
 
 <decision_framework>
@@ -87,6 +98,26 @@ Analyze user question for time-specific language:
 - No specific time mentioned → null (no database query needed)
 </time_period_analysis>
 
+<graph_detection>
+Analyze if the user query would benefit from data visualization:
+
+Graph indicators:
+- "show me a chart", "visualize", "graph", "plot", "draw"
+- "compare", "trend", "pattern", "distribution", "overview"
+- "how often", "frequency", "over time", "across lessons"
+- "breakdown", "proportion", "percentage", "statistics"
+- "see the data", "visual representation", "chart of"
+
+Available graphs:
+{get_graphs_for_intent_analysis()}
+
+Choose the most appropriate graph based on:
+- Teaching area focus → teaching_area_distribution or total_distribution
+- Time-based analysis → utterance_timeline or area_distribution_time
+- Speaking pace analysis → wpm_trend
+- General comparison → total_distribution
+</graph_detection>
+
 <agent_selection_criteria>
 Choose RAG ASSISTANT when:
 - User requests specific examples or evidence
@@ -95,8 +126,10 @@ Choose RAG ASSISTANT when:
 - Questions that need transcript-level detail to answer properly
 - Follow-up questions requesting specifics after general responses
 - **Time-specific questions (beginning/middle/end) - these ALWAYS need RAG for detailed analysis**
+DO NOT USE RAG ASSISTANT ALONG WITH GRAPH GENERATION
 
 Choose GENERAL ASSISTANT when:
+- User asks about data visualization
 - Questions are broad and evaluative WITHOUT time specificity ("How did my lesson go overall?")
 - Requests for general teaching advice or strategies
 - High-level performance assessment questions that cover the ENTIRE lesson
@@ -148,6 +181,9 @@ ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
 - class_period: string ("beginning", "middle", "end", or null)
 - agent_to_use: string ("general_assistant" or "rag_assistant")
 - transformed_query: string (better query to help with response and RAG)
+- needs_graph: boolean (true if visualization would help answer the query)
+- graph_type: string (from available graphs) or null
+- graph_reason: string (explanation of why this graph helps)
 </output_requirements>"""
 
     def _build_message_history(self, conversation_history: List[Dict[str, str]], current_message: str) -> List:
@@ -208,7 +244,7 @@ ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
                 intent_analysis = json.loads(response_text.strip())
                 
                 # Validate required fields for new format
-                required_fields = ["class_period", "agent_to_use", "transformed_query"]
+                required_fields = ["class_period", "agent_to_use", "transformed_query", "needs_graph", "graph_type", "graph_reason"]
                 for field in required_fields:
                     if field not in intent_analysis:
                         intent_analysis[field] = self._get_default_value(field)
@@ -220,6 +256,13 @@ ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
                 # Ensure class_period is valid
                 if intent_analysis["class_period"] not in ["beginning", "middle", "end", None]:
                     intent_analysis["class_period"] = None
+                
+                # Ensure graph_type is valid if needs_graph is true
+                if intent_analysis.get("needs_graph") and intent_analysis.get("graph_type"):
+                    if not validate_graph_type(intent_analysis["graph_type"]):
+                        intent_analysis["graph_type"] = None
+                        intent_analysis["needs_graph"] = False
+                        intent_analysis["graph_reason"] = "Invalid graph type specified"
                 
                 return intent_analysis
                 
@@ -238,7 +281,10 @@ ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
         defaults = {
             "class_period": None,
             "agent_to_use": "general_assistant",
-            "transformed_query": None
+            "transformed_query": None,
+            "needs_graph": False,
+            "graph_type": None,
+            "graph_reason": None
         }
         return defaults.get(field, None)
     
@@ -281,7 +327,10 @@ ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
         return {
             "class_period": class_period,
             "agent_to_use": agent_to_use,
-            "transformed_query": user_message  # Use original query as fallback
+            "transformed_query": user_message,  # Use original query as fallback
+            "needs_graph": False,  # Fallback doesn't detect graphs
+            "graph_type": None,
+            "graph_reason": None
         }
     
     async def route_query(self, user_message: str, file_ids: List[int] = None, conversation_history: List[Dict[str, str]] = None) -> Dict[str, Any]:

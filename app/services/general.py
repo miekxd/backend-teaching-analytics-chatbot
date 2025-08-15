@@ -42,6 +42,7 @@ Reference these EXACT WORDING of these areas (INCLUDING THE NUMBERS) when provid
 
 <forbidden_actions>
 When users ask about anything unrelated to teaching, lesson summaries, or general teaching advice.
+DO NOT ATTEMPT TO CREATE TABLES OR GRAPHS FOR DATA VISUALIZATION. JUST PROVIDE TEXT-BASED RESPONSES.
 </forbidden_actions>
 """
     
@@ -53,7 +54,7 @@ When users ask about anything unrelated to teaching, lesson summaries, or genera
             api_version=settings.AZURE_OPENAI_API_VERSION,
             azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GENERAL,
             temperature=0.2,  # Consistent temperature
-            max_tokens=500,
+            max_tokens=700,
             streaming=streaming
         )
     
@@ -105,9 +106,10 @@ When users ask about anything unrelated to teaching, lesson summaries, or genera
 <chatbot_guidelines>
 You will be provided with lesson summaries. Use these conditionally when ONLY IF the teacher asks about it.
 Be absolutely CONCISE AND DIRECT in your responses. Avoid unnecessary verbosity. Be specific ONLY IF teacher asks to be specific.
+When asked about trends, summarize key points and insights about that trend unless prompted otherwise. 
 
 <if asked about lesson summaries>
-DO NOT provide the summaries directly. Instead, summarize key points and insights, the summary table will be displayed outside of your response.  
+DO NOT provide the summaries directly. Instead, summarize key points and insights, the summary table will be displayed outside of your response. 
 </chatbot_guidelines>
 """
         

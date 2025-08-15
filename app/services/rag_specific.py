@@ -134,7 +134,12 @@ You may receive:
 - Focus on actionable insights for teacher development
 - Maintain constructive, supportive tone
 - You help teachers reflect on their practice, not to evaluate or judge them. 
-</output_requirements>"""
+</output_requirements>
+
+<forbidden actions>
+DO NOT ATTEMPT TO CREATE TABLES OR GRAPHS FOR DATA VISUALIZATION. JUST PROVIDE TEXT-BASED RESPONSES.
+</forbidden actions>
+"""
 
     def _get_llm(self, streaming: bool = False) -> AzureChatOpenAI:
         """Get configured LLM instance with consistent settings"""
@@ -341,6 +346,8 @@ You may receive:
 7. MAKE SURE TO CITE EVIDENCE INCLUDING CLASS SECTION AND TEACHING AREAS
 8. Always remember, your users have limited time and are lazy. Be concise and visually appealing.
 </analysis_instructions>
+
+
 """
         messages.append(HumanMessage(content=current_with_context))
         print(context)

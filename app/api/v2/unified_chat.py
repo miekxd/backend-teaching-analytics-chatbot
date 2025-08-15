@@ -49,26 +49,56 @@ async def unified_chat_endpoint(request: UnifiedChatRequest):
         agent_to_use = intent_analysis.get("agent_to_use", "general_assistant")
         class_period = intent_analysis.get("class_period")
         transformed_query = intent_analysis.get("transformed_query", user_message)
+
+        # Check if graph is needed based on intent analysis
+        needs_graph = intent_analysis.get("needs_graph", False)
+        graph_type = intent_analysis.get("graph_type")
+        graph_reason = intent_analysis.get("graph_reason")
+        print(f"Intent Analysis: {json.dumps(intent_analysis, indent=2)}")
         
         # Step 2: Route to appropriate assistant
-        if agent_to_use == "rag_assistant":
-            # Use RAG assistant with class period filtering
-            response = await rag_assistant.get_response(
-                semantic_query=transformed_query,
-                user_message=user_message,
-                file_ids=file_ids,
-                class_period=class_period,
-                conversation_history=request.conversation_history
-            )
+        if needs_graph == 'true':
+            if agent_to_use == "rag_assistant":
+                # Use RAG assistant with class period filtering
+                response = await rag_assistant.get_response(
+                    semantic_query=transformed_query,
+                    user_message=transformed_query,
+                    file_ids=file_ids,
+                    class_period=class_period,
+                    conversation_history=request.conversation_history
+                )
+            else:
+                # Use general assistant
+                response = await general_assistant.get_response(
+                    user_message=transformed_query,
+                    file_ids=file_ids,
+                    conversation_history=request.conversation_history
+                )
         else:
-            # Use general assistant
-            response = await general_assistant.get_response(
-                user_message=user_message,
-                file_ids=file_ids,
-                conversation_history=request.conversation_history
-            )
+            if agent_to_use == "rag_assistant":
+                # Use RAG assistant with class period filtering
+                response = await rag_assistant.get_response(
+                    semantic_query=transformed_query,
+                    user_message=user_message,
+                    file_ids=file_ids,
+                    class_period=class_period,
+                    conversation_history=request.conversation_history
+                )
+            else:
+                # Use general assistant
+                response = await general_assistant.get_response(
+                    user_message=user_message,
+                    file_ids=file_ids,
+                    conversation_history=request.conversation_history
+                )
+    
         
-        return UnifiedResponse(response=response)
+        return UnifiedResponse(
+            response=response,
+            needs_graph=needs_graph,
+            graph_type=graph_type,
+            graph_reason=graph_reason
+        )
     
     except Exception as e:
         logger.error(f"Unified chat error: {str(e)}")
@@ -93,28 +123,58 @@ async def unified_streaming_generator(
         agent_to_use = intent_analysis.get("agent_to_use", "general_assistant")
         class_period = intent_analysis.get("class_period")
         transformed_query = intent_analysis.get("transformed_query", user_message)
-        
+        needs_graph = intent_analysis.get("needs_graph", False)
+        graph_type = intent_analysis.get("graph_type")
+        graph_reason = intent_analysis.get("graph_reason")
         print(f"Intent Analysis: {json.dumps(intent_analysis, indent=2)}")
-        # Step 2: Route to appropriate assistant with streaming
-        if agent_to_use == "rag_assistant":
-            # Use RAG assistant streaming with class period filtering
-            async for chunk in rag_assistant.get_response_stream(
-                semantic_query=transformed_query,
-                user_message=user_message,
-                file_ids=file_ids,
-                class_period=class_period,
-                conversation_history=conversation_history
-            ):
-                yield chunk  # Real streaming chunks from RAG
+
+        # Normalize needs_graph to boolean
+        if isinstance(needs_graph, str):
+            needs_graph_bool = needs_graph.lower() == "true"
         else:
-            # Use general assistant with simulated streaming
-            async for chunk in general_assistant.get_response_stream(
-                user_message=user_message,
-                file_ids=file_ids,
-                conversation_history=conversation_history
-            ):
-                yield chunk  # Real streaming chunks from general assistant
-        
+            needs_graph_bool = bool(needs_graph)
+
+        # Step 2: Send graph code first if needed
+        if needs_graph_bool and graph_type:
+            graph_code = f"GRAPH:{graph_type}"
+            yield f"data: {json.dumps({'type': 'graph_code', 'code': graph_code, 'reason': graph_reason})}\n\n"
+
+        # Step 3: Route to appropriate assistant with streaming
+        if needs_graph_bool:
+            if agent_to_use == "rag_assistant":
+                async for chunk in rag_assistant.get_response_stream(
+                    semantic_query=transformed_query,
+                    user_message=transformed_query,
+                    file_ids=file_ids,
+                    class_period=class_period,
+                    conversation_history=conversation_history
+                ):
+                    yield chunk
+            else:
+                async for chunk in general_assistant.get_response_stream(
+                    user_message=transformed_query,
+                    file_ids=file_ids,
+                    conversation_history=conversation_history
+                ):
+                    yield chunk
+        else:
+            if agent_to_use == "rag_assistant":
+                async for chunk in rag_assistant.get_response_stream(
+                    semantic_query=transformed_query,
+                    user_message=user_message,
+                    file_ids=file_ids,
+                    class_period=class_period,
+                    conversation_history=conversation_history
+                ):
+                    yield chunk
+            else:
+                async for chunk in general_assistant.get_response_stream(
+                    user_message=user_message,
+                    file_ids=file_ids,
+                    conversation_history=conversation_history
+                ):
+                    yield chunk
+
     except Exception as e:
         yield f"Error: {str(e)}"
 
