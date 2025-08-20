@@ -10,7 +10,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 
 from app.core.config import settings
 from app.db.supabase import get_supabase_client
-from app.services.graph_registry import get_graphs_for_intent_analysis, validate_graph_type
+from app.services.graph_registry import get_graphs_for_intent_analysis, validate_graph_type, map_natural_language_to_area_codes, get_available_area_codes
 
 class IntentAnalyzer:
     """
@@ -22,6 +22,7 @@ class IntentAnalyzer:
     3. Returns routing decision with confidence scores
     4. Singapore Teaching Practice framework awareness
     5. Considers lesson availability and relevance
+    6. Detects lesson and teaching area filtering for graphs
     """
     
     def __init__(self):
@@ -42,7 +43,7 @@ class IntentAnalyzer:
         self.system_prompt = f"""You are an Intent Analyzer Agent for a Singapore educator teaching assistant system. Your primary responsibility is to analyze user questions and conversation history to determine the optimal tool combination for providing the best response.
 
 <role>
-You are a routing specialist that understands teaching contexts and can efficiently direct questions to the most appropriate analysis tools and agents based on the specificity and scopeTransform the user query into a better query that helps the following agents respond more effectively
+You are a routing specialist that understands teaching contexts and can efficiently direct questions to the most appropriate analysis tools and agents based on the specificity and scope. Transform the user query into a better query that helps the following agents respond more effectively.
 
 <transform_query>
 Transform user query into a more effective query for the agents IF:
@@ -79,15 +80,18 @@ Usage: When user specifies or implies a specific time period in their question
 - Access: Lesson data summary + database retrieval + RAG of relevant chunks
 - Best for: Specific examples, detailed analysis, evidence-based responses
 - Use when: Questions require specific evidence, examples, or detailed transcript analysis
-</rag_assistant>
 </available_agents>
-
-<available_graphs>
-{get_graphs_for_intent_analysis()}
-
-Usage: When user requests visual representation, charts, graphs, or data visualization
-</available_graphs>
 </available_tools>
+
+<area_filtering>
+Analyze user query for teaching area focus:
+- "focus on questioning", "just show questioning" → area_filter: ["3.3"]
+- "interaction and collaboration" → area_filter: ["1.1", "3.4"]
+- "motivation and engagement" → area_filter: ["3.2"]
+- "all areas" or no specific area mentioned → area_filter: [] (show all areas)
+
+Available teaching areas: {get_available_area_codes()}
+</area_filtering>
 
 <decision_framework>
 <time_period_analysis>
@@ -109,13 +113,22 @@ Graph indicators:
 - "see the data", "visual representation", "chart of"
 
 Available graphs:
-{get_graphs_for_intent_analysis()}
+- teaching_area_distribution: Bar chart showing distribution of teaching activities across Singapore Teaching Practice areas (1.1, 3.4, etc.) (Lesson Filter: ✓, Area Filter: ✓)
+- total_distribution: Aggregated bar chart showing total teaching area distribution across all selected lessons (Lesson Filter: ✓, Area Filter: ✓)
+- utterance_timeline: Line chart showing teaching area patterns across lesson progression (Lesson Filter: ✓, Area Filter: ✓)
+- area_distribution_time: Bar chart showing teaching area distribution across time intervals (chunks) (Lesson Filter: ✓, Area Filter: ✓)
+- wpm_trend: Area chart showing speaking pace (words per minute) over lesson duration (Lesson Filter: ✓, Area Filter: ✗)
 
-Choose the most appropriate graph based on:
+Usage: When user requests visual representation, charts, graphs, or data visualization
+
+Choose the most appropriate graph(s) based on:
 - Teaching area focus → teaching_area_distribution or total_distribution
 - Time-based analysis → utterance_timeline or area_distribution_time
 - Speaking pace analysis → wpm_trend
 - General comparison → total_distribution
+- Comprehensive analysis → multiple complementary graphs
+
+MULTIPLE GRAPHS: When users ask for comprehensive views, comparisons, or multiple perspectives, provide multiple graphs that complement each other.
 </graph_detection>
 
 <agent_selection_criteria>
@@ -152,21 +165,32 @@ When conversation history is available:
 3. Consider conversation history for context escalation
 4. Select appropriate time period (if applicable)
 5. Choose optimal agent based on question specificity and data needs
+6. Detect lesson filtering needs (specific lessons vs all lessons)
+7. Detect area filtering needs (specific teaching areas vs all areas)
 </analysis_process>
 
 <decision_examples>
 <general_assistant_examples>
-- "How did my lesson go overall?" → agent: general_assistant, class_period: null
-- "What teaching strategies worked well?" → agent: general_assistant, class_period: null
-- "Can you give me feedback on my lesson?" → agent: general_assistant, class_period: null
+- "How did my lesson go overall?" → agent: general_assistant, class_period: null, lesson_filter: [], area_filter: []
+- "What teaching strategies worked well?" → agent: general_assistant, class_period: null, lesson_filter: [], area_filter: []
+- "Can you give me feedback on my lesson?" → agent: general_assistant, class_period: null, lesson_filter: [], area_filter: []
 </general_assistant_examples>
 
 <rag_assistant_examples>
-- "Show me examples of when I asked good questions" → agent: rag_assistant, class_period: null
-- "What happened in the first 15 minutes?" → agent: rag_assistant, class_period: beginning
-- "Can you find specific instances when students were engaged?" → agent: rag_assistant, class_period: null
-- "How did I conclude the lesson?" → agent: rag_assistant, class_period: end
+- "Show me examples of when I asked good questions" → agent: rag_assistant, class_period: null, lesson_filter: [], area_filter: []
+- "What happened in the first 15 minutes?" → agent: rag_assistant, class_period: beginning, lesson_filter: [], area_filter: []
+- "Can you find specific instances when students were engaged?" → agent: rag_assistant, class_period: null, lesson_filter: [], area_filter: []
+- "How did I conclude the lesson?" → agent: rag_assistant, class_period: end, lesson_filter: [], area_filter: []
 </rag_assistant_examples>
+
+<graph_examples>
+- "Show me a chart comparing lesson 1 and 2" → needs_graph: true, graph_types: [{{"type": "teaching_area_distribution", "reason": "Shows distribution comparison between lessons"}}], area_filter: []
+- "Focus on my questioning patterns" → needs_graph: true, graph_types: [{{"type": "utterance_timeline", "reason": "Shows questioning patterns over time"}}], lesson_filter: [], area_filter: ["3.3"]
+- "Compare my interaction skills across all lessons" → needs_graph: true, graph_types: [{{"type": "total_distribution", "reason": "Shows overall interaction skills distribution"}}], lesson_filter: [], area_filter: ["1.1"]
+- "Show me speaking pace for the first lesson only" → needs_graph: true, graph_types: [{{"type": "wpm_trend", "reason": "Shows speaking pace over time for the first lesson"}}], lesson_filter: ["Science_Lesson1(09-07-2024).xlsx"], area_filter: []
+- "Give me a comprehensive overview of my teaching" → needs_graph: true, graph_types: [{{"type": "total_distribution", "reason": "Shows overall teaching area distribution"}}, {{"type": "utterance_timeline", "reason": "Shows teaching patterns over time"}}], lesson_filter: [], area_filter: []
+- "Show me both the area distribution and my questioning patterns" → needs_graph: true, graph_types: [{{"type": "teaching_area_distribution", "reason": "Shows distribution across teaching areas"}}, {{"type": "utterance_timeline", "reason": "Shows questioning patterns over time"}}], lesson_filter: [], area_filter: ["3.3"]
+</graph_examples>
 
 <time_period_examples>
 - "How did I start the lesson?" → class_period: beginning
@@ -176,19 +200,14 @@ When conversation history is available:
 </time_period_examples>
 </decision_examples>
 
-<output_requirements>
-ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
-- class_period: string ("beginning", "middle", "end", or null)
-- agent_to_use: string ("general_assistant" or "rag_assistant")
-- transformed_query: string (better query to help with response and RAG)
-- needs_graph: boolean (true if visualization would help answer the query)
-- graph_type: string (from available graphs) or null
-- graph_reason: string (explanation of why this graph helps)
-</output_requirements>"""
+"""
 
-    def _build_message_history(self, conversation_history: List[Dict[str, str]], current_message: str) -> List:
+    async def _build_message_history(self, conversation_history: List[Dict[str, str]], current_message: str, file_ids: List[str]) -> List:
         """Build proper message history for LangChain with intent analysis context"""
-        messages = [SystemMessage(content=self.system_prompt)]
+        # Build dynamic system prompt with current lesson information
+        dynamic_system_prompt = await self._build_dynamic_system_prompt(file_ids)
+        
+        messages = [SystemMessage(content=dynamic_system_prompt)]
         
         # Add conversation history (keep last 6 messages for better context)
         for msg in conversation_history[-6:]:
@@ -200,157 +219,241 @@ ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
             elif role == "assistant" and content:
                 messages.append(AIMessage(content=content))
         
-        # Add current message with intent analysis context
-        current_with_context = f"""<current_user_question>
-    {current_message}
-    </current_user_question>"""
-        
-        messages.append(HumanMessage(content=current_with_context))
+        # Add current message
+        messages.append(HumanMessage(content=current_message))
         return messages
 
-    async def analyze_intent(self, user_message: str, file_ids: List[int] = None, conversation_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
-        """
-        Analyze user intent and determine routing decision
+    async def _build_dynamic_system_prompt(self, file_ids: List[str]) -> str:
+        """Build dynamic system prompt with current lesson information"""
+        # Get lesson names from file_ids
+        lesson_names = self._get_lesson_names(file_ids)
         
-        Args:
-            user_message: The user's query
-            file_ids: Available lesson file IDs
-            conversation_history: Previous conversation context
+        # Build the dynamic section with clear mapping instructions
+        lesson_section = f"""Available lessons: {lesson_names}
+
+IMPORTANT: When users reference lessons, map their natural language to the exact lesson names above:
+- "lesson 1", "first lesson" → Use the first lesson name from the list
+- "lesson 2", "second lesson" → Use the second lesson name from the list  
+- "lesson 3", "third lesson" → Use the third lesson name from the list
+- "Science lesson from July 9th" → Use "Science_Lesson1(09-07-2024).xlsx"
+- "Science lesson from July 23rd" → Use "Science_Lesson2(23-07-2024).xlsx"
+- "Science lesson from July 30th" → Use "Science_Lesson3(30-07-2024).xlsx"
+
+ALWAYS use the exact lesson names in lesson_filter when users reference specific lessons.
+
+<output_requirements>
+ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
+- class_period: string ("beginning", "middle", "end", or null)
+- agent_to_use: string ("general_assistant" or "rag_assistant")
+- transformed_query: string (better query to help with response and RAG) DO NOT MENTION GRAPH OR VISUALIZE
+- needs_graph: boolean (true if visualization would help answer the query)
+- graph_types: array of graph objects with type and reason (e.g., [{{"type": "teaching_area_distribution", "reason": "Shows distribution across areas"}}, {{"type": "utterance_timeline", "reason": "Shows patterns over time"}}]) or null
+- lesson_filter: array of lesson references (e.g., ["Science_Lesson1(09-07-2024).xlsx", "Science_Lesson2(23-07-2024).xlsx"]) or empty array for all lessons
+- area_filter: array of teaching area codes (e.g., ["3.3", "3.4"]) or empty array for all areas
+
+Note: For single graphs, use graph_types with one object. For multiple graphs, use graph_types with multiple objects. The old graph_type and graph_reason fields are deprecated.
+</output_requirements>"""
+        
+        # Combine base prompt with dynamic section
+        return self.system_prompt + "\n\n" + lesson_section
+
+    def _get_lesson_names(self, file_ids: List[str]) -> str:
+        """Get formatted lesson names from file_ids"""
+        if not file_ids:
+            print(f"DEBUG: No file_ids provided")
+            return "No lessons available"
+        
+        try:
+            print(f"DEBUG: Fetching lesson names for file_ids: {file_ids}")
+            # Get file information from database (no await needed for Supabase)
+            result = self.supabase.table("files").select("stored_filename").in_("file_id", file_ids).execute()
             
+            print(f"DEBUG: Supabase result: {result}")
+            print(f"DEBUG: Result data: {result.data}")
+            
+            if result.data:
+                # Extract lesson names and format them
+                lesson_names = [f["stored_filename"] for f in result.data]
+                print(f"DEBUG: Extracted lesson names: {lesson_names}")
+                return ", ".join(lesson_names)
+            else:
+                print(f"DEBUG: No data in result")
+                return "No lessons available"
+            
+        except Exception as e:
+            print(f"Error retrieving lesson names: {e}")
+            return "No lessons available"
+
+    async def analyze_intent(
+        self,
+        user_message: str,
+        file_ids: List[str],
+        conversation_history: List[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze user intent and determine routing strategy
+        
         Returns:
-            Dict with routing decision and analysis details
+        - agent_to_use: "general_assistant" or "rag_assistant"
+        - class_period: "beginning", "middle", "end", or null
+        - transformed_query: Enhanced query for better agent response
+        - needs_graph: Boolean indicating if graph is needed
+        - graph_type: Type of graph to generate
+        - graph_reason: Explanation of why graph helps
+        - lesson_filter: Array of lesson references for filtering
+        - area_filter: Array of teaching area codes for filtering
         """
         try:
-            messages = self._build_message_history(
-                conversation_history or [],
-                user_message
-            )
+            print(f"DEBUG: Starting analyze_intent for message: {user_message}")
             
-            # Get LLM and analyze intent
-            llm = AzureChatOpenAI(
-                azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-                api_key=settings.AZURE_OPENAI_API_KEY,
-                api_version=settings.AZURE_OPENAI_API_VERSION,
-                azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_RAG,
-                temperature=0.1,
-                max_tokens=300
-            )
+            # Build message history
+            print("DEBUG: Building message history...")
+            messages = await self._build_message_history(conversation_history or [], user_message, file_ids)
             
-            response = await llm.ainvoke(messages)
-            response_text = response.content
+            print(f"DEBUG: Messages built, count: {len(messages)}")
+            print(f"DEBUG: First message content preview: {messages[0].content[:200]}...")
+            
+            # Get intent analysis from LLM
+            print("DEBUG: Calling LLM...")
+            response = await self.llm.ainvoke(messages)
+            content = response.content
+            print(f"DEBUG: LLM response received, length: {len(content)}")
+            print(f"DEBUG: LLM response preview: {content[:500]}...")
             
             # Parse JSON response
+            print("DEBUG: Parsing JSON response...")
             try:
-                intent_analysis = json.loads(response_text.strip())
-                
-                # Validate required fields for new format
-                required_fields = ["class_period", "agent_to_use", "transformed_query", "needs_graph", "graph_type", "graph_reason"]
-                for field in required_fields:
-                    if field not in intent_analysis:
-                        intent_analysis[field] = self._get_default_value(field)
-                
-                # Ensure agent_to_use is valid
-                if intent_analysis["agent_to_use"] not in ["general_assistant", "rag_assistant"]:
-                    intent_analysis["agent_to_use"] = "general_assistant"
-                
-                # Ensure class_period is valid
-                if intent_analysis["class_period"] not in ["beginning", "middle", "end", None]:
-                    intent_analysis["class_period"] = None
-                
-                # Ensure graph_type is valid if needs_graph is true
-                if intent_analysis.get("needs_graph") and intent_analysis.get("graph_type"):
-                    if not validate_graph_type(intent_analysis["graph_type"]):
-                        intent_analysis["graph_type"] = None
-                        intent_analysis["needs_graph"] = False
-                        intent_analysis["graph_reason"] = "Invalid graph type specified"
-                
-                return intent_analysis
-                
-            except json.JSONDecodeError as e:
-                print(f"JSON parsing error: {e}")
-                print(f"Response text: {response_text}")
-                # Fallback analysis
-                return self._fallback_analysis(user_message, file_ids)
-                
+                intent_analysis = json.loads(content)
+                print(f"DEBUG: JSON parsed successfully: {intent_analysis}")
+            except json.JSONDecodeError as json_err:
+                print(f"DEBUG: JSON parsing failed: {json_err}")
+                # Fallback to basic analysis if JSON parsing fails
+                intent_analysis = {
+                    "agent_to_use": "general_assistant",
+                    "class_period": None,
+                    "transformed_query": user_message,
+                    "needs_graph": False,
+                    "graph_types": None,
+                    "lesson_filter": [],
+                    "area_filter": []
+                }
+            
+            print("DEBUG: Processing lesson filtering...")
+            # Validate and process lesson filtering
+            lesson_filter = intent_analysis.get("lesson_filter", [])
+            if lesson_filter:
+                # Map lesson references to actual file_ids
+                lesson_filter = await self._map_lesson_references_to_file_ids(lesson_filter, file_ids)
+            
+            print("DEBUG: Processing area filtering...")
+            # Validate and process area filtering
+            area_filter = intent_analysis.get("area_filter", [])
+            if area_filter:
+                # Map natural language to area codes if needed
+                area_filter = self._map_natural_language_to_area_codes(area_filter)
+            
+            print("DEBUG: Processing graph types...")
+            # Validate graph type if needed
+            graph_types = intent_analysis.get("graph_types")
+            if graph_types:
+                print(f"DEBUG: Found graph_types: {graph_types}")
+                # Ensure all graph types are valid
+                valid_graph_types = []
+                for graph_obj in graph_types:
+                    graph_type = graph_obj.get("type")
+                    print(f"DEBUG: Validating graph type: {graph_type}")
+                    if graph_type and validate_graph_type(graph_type):
+                        valid_graph_types.append(graph_obj)
+                        print(f"DEBUG: Graph type {graph_type} is valid")
+                    else:
+                        print(f"DEBUG: Graph type {graph_type} is invalid")
+                intent_analysis["graph_types"] = valid_graph_types
+                intent_analysis["needs_graph"] = True # If any graph type is valid, needs_graph is true
+            else:
+                print("DEBUG: No graph_types found, setting needs_graph to false")
+                intent_analysis["needs_graph"] = False
+            
+            print("DEBUG: Updating filters...")
+            # Update with processed filters
+            intent_analysis["lesson_filter"] = lesson_filter
+            intent_analysis["area_filter"] = area_filter
+            
+            print(f"DEBUG: Final intent_analysis: {intent_analysis}")
+            return intent_analysis
+            
         except Exception as e:
-            print(f"Intent analysis error: {e}")
-            return self._fallback_analysis(user_message, file_ids)
-    
-    def _get_default_value(self, field: str) -> Any:
-        """Get default values for missing fields"""
-        defaults = {
-            "class_period": None,
-            "agent_to_use": "general_assistant",
-            "transformed_query": None,
-            "needs_graph": False,
-            "graph_type": None,
-            "graph_reason": None
-        }
-        return defaults.get(field, None)
-    
-    def _fallback_analysis(self, user_message: str, file_ids: List[int] = None) -> Dict[str, Any]:
-        """Fallback intent analysis using keyword matching"""
-        message_lower = user_message.lower()
-        
-        # Time period keywords
-        time_keywords = {
-            "beginning": ["beginning", "start", "opening", "first"],
-            "middle": ["middle", "during", "in the middle"],
-            "end": ["end", "conclusion", "closing", "last", "wrap up"]
-        }
-        
-        # Detect time period
-        class_period = None
-        for period, keywords in time_keywords.items():
-            if any(keyword in message_lower for keyword in keywords):
-                class_period = period
-                break
-        
-        # Lesson-specific keywords
-        lesson_keywords = [
-            "show me examples", "specific instances", "what happened", "find examples",
-            "detailed analysis", "transcript", "recording", "particular moments"
-        ]
-        
-        # General teaching keywords  
-        general_keywords = [
-            "how did", "overall", "general feedback", "teaching strategies",
-            "broad evaluation", "advice"
-        ]
-        
-        # Determine agent
-        lesson_score = sum(1 for keyword in lesson_keywords if keyword in message_lower)
-        general_score = sum(1 for keyword in general_keywords if keyword in message_lower)
-        
-        agent_to_use = "rag_assistant" if lesson_score > general_score else "general_assistant"
-        
-        return {
-            "class_period": class_period,
-            "agent_to_use": agent_to_use,
-            "transformed_query": user_message,  # Use original query as fallback
-            "needs_graph": False,  # Fallback doesn't detect graphs
-            "graph_type": None,
-            "graph_reason": None
-        }
-    
-    async def route_query(self, user_message: str, file_ids: List[int] = None, conversation_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
-        """
-        Route query and return the structured response
-        
-        Returns:
-            Dict with class_period, agent_to_use, and transformed_query
-        """
-        return await self.analyze_intent(user_message, file_ids, conversation_history)
-    
-    def get_agent_type(self, analysis: Dict[str, Any]) -> str:
-        """
-        Extract agent type from analysis
-        
-        Returns:
-            "general" or "rag" for backwards compatibility
-        """
-        agent = analysis.get("agent_to_use", "general_assistant")
-        return "rag" if agent == "rag_assistant" else "general"
+            import traceback
+            print(f"ERROR in analyze_intent: {str(e)}")
+            print(f"Traceback: {traceback.format_exc()}")
+            # Fallback to basic analysis
+            return {
+                "agent_to_use": "general_assistant",
+                "class_period": None,
+                "transformed_query": user_message,
+                "needs_graph": False,
+                "graph_types": None,
+                "lesson_filter": [],
+                "area_filter": []
+            }
 
-# Create instance
+    async def _map_lesson_references_to_file_ids(self, lesson_references: List[str], file_ids: List[str]) -> List[str]:
+        """Map lesson references to actual file IDs"""
+        if not lesson_references or not file_ids:
+            return []
+        
+        try:
+            # Get file information from database
+            result = await self.supabase.table("files").select("file_id, stored_filename").in_("file_id", file_ids).execute()
+            data = result.data
+            error = result.error
+            
+            if error or not data:
+                return []
+            
+            file_info = {f["stored_filename"]: f["file_id"] for f in data}
+            
+            mapped_ids = []
+            for ref in lesson_references:
+                ref_lower = ref.lower()
+                
+                # Handle numeric references like "lesson 1", "first lesson"
+                if "lesson" in ref_lower or "first" in ref_lower or "second" in ref_lower or "third" in ref_lower:
+                    # For now, return all file_ids as we can't easily map lesson numbers
+                    # In a real implementation, you'd need to store lesson order/sequence
+                    mapped_ids.extend(file_ids)
+                    break
+                
+                # Handle specific lesson names
+                for filename, file_id in file_info.items():
+                    if ref_lower in filename.lower():
+                        mapped_ids.append(file_id)
+                        break
+            
+            # If no specific mapping found, return all file_ids (default behavior)
+            if not mapped_ids:
+                return []
+            
+            return list(set(mapped_ids))  # Remove duplicates
+            
+        except Exception as e:
+            return []
+
+    def _map_natural_language_to_area_codes(self, area_references: List[str]) -> List[str]:
+        """Map natural language area references to area codes"""
+        if not area_references:
+            return []
+        
+        mapped_codes = []
+        for ref in area_references:
+            # Check if it's already an area code
+            if ref in get_available_area_codes():
+                mapped_codes.append(ref)
+            else:
+                # Try to map natural language
+                codes = map_natural_language_to_area_codes(ref)
+                mapped_codes.extend(codes)
+        
+        return list(set(mapped_codes))  # Remove duplicates
+
+# Global instance
 intent_analyzer = IntentAnalyzer()

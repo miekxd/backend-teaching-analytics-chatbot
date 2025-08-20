@@ -52,8 +52,9 @@ async def unified_chat_endpoint(request: UnifiedChatRequest):
 
         # Check if graph is needed based on intent analysis
         needs_graph = intent_analysis.get("needs_graph", False)
-        graph_type = intent_analysis.get("graph_type")
-        graph_reason = intent_analysis.get("graph_reason")
+        graph_types = intent_analysis.get("graph_types")
+        lesson_filter = intent_analysis.get("lesson_filter", [])
+        area_filter = intent_analysis.get("area_filter", [])
         print(f"Intent Analysis: {json.dumps(intent_analysis, indent=2)}")
         
         # Step 2: Route to appropriate assistant
@@ -96,8 +97,9 @@ async def unified_chat_endpoint(request: UnifiedChatRequest):
         return UnifiedResponse(
             response=response,
             needs_graph=needs_graph,
-            graph_type=graph_type,
-            graph_reason=graph_reason
+            graph_types=graph_types,
+            lesson_filter=lesson_filter,
+            area_filter=area_filter
         )
     
     except Exception as e:
@@ -124,8 +126,7 @@ async def unified_streaming_generator(
         class_period = intent_analysis.get("class_period")
         transformed_query = intent_analysis.get("transformed_query", user_message)
         needs_graph = intent_analysis.get("needs_graph", False)
-        graph_type = intent_analysis.get("graph_type")
-        graph_reason = intent_analysis.get("graph_reason")
+        graph_types = intent_analysis.get("graph_types")
         print(f"Intent Analysis: {json.dumps(intent_analysis, indent=2)}")
 
         # Normalize needs_graph to boolean
@@ -134,10 +135,18 @@ async def unified_streaming_generator(
         else:
             needs_graph_bool = bool(needs_graph)
 
-        # Step 2: Send graph code first if needed
-        if needs_graph_bool and graph_type:
-            graph_code = f"GRAPH:{graph_type}"
-            yield f"data: {json.dumps({'type': 'graph_code', 'code': graph_code, 'reason': graph_reason})}\n\n"
+        # Step 2: Send graph codes first if needed
+        if needs_graph_bool and graph_types:
+            lesson_filter = intent_analysis.get("lesson_filter", [])
+            area_filter = intent_analysis.get("area_filter", [])
+            
+            # Send each graph code separately
+            for graph_obj in graph_types:
+                graph_type = graph_obj.get("type")
+                graph_reason = graph_obj.get("reason")
+                if graph_type:
+                    graph_code = f"GRAPH:{graph_type}"
+                    yield f"data: {json.dumps({'type': 'graph_code', 'code': graph_code, 'reason': graph_reason, 'lesson_filter': lesson_filter, 'area_filter': area_filter})}\n\n"
 
         # Step 3: Route to appropriate assistant with streaming
         if needs_graph_bool:
