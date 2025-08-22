@@ -10,7 +10,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 
 from app.core.config import settings
 from app.db.supabase import get_supabase_client
-from app.services.graph_registry import get_graphs_for_intent_analysis, validate_graph_type, map_natural_language_to_area_codes, get_available_area_codes
+from app.services.graph_registry import get_graphs_for_intent_analysis, validate_graph_type, map_natural_language_to_area_codes, get_available_area_codes, AVAILABLE_GRAPHS
 
 class IntentAnalyzer:
     """
@@ -113,11 +113,7 @@ Graph indicators:
 - "see the data", "visual representation", "chart of"
 
 Available graphs:
-- teaching_area_distribution: Bar chart showing distribution of teaching activities across Singapore Teaching Practice areas (1.1, 3.4, etc.) (Lesson Filter: ✓, Area Filter: ✓)
-- total_distribution: Aggregated bar chart showing total teaching area distribution across all selected lessons (Lesson Filter: ✓, Area Filter: ✓)
-- utterance_timeline: Line chart showing teaching area patterns across lesson progression (Lesson Filter: ✓, Area Filter: ✓)
-- area_distribution_time: Bar chart showing teaching area distribution across time intervals (chunks) (Lesson Filter: ✓, Area Filter: ✓)
-- wpm_trend: Area chart showing speaking pace (words per minute) over lesson duration (Lesson Filter: ✓, Area Filter: ✗)
+{self._get_graph_descriptions_for_prompt()}
 
 Usage: When user requests visual representation, charts, graphs, or data visualization
 
@@ -257,6 +253,18 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
         # Combine base prompt with dynamic section
         return self.system_prompt + "\n\n" + lesson_section
 
+    def _get_graph_descriptions_for_prompt(self) -> str:
+        """Get formatted graph descriptions for LLM prompt"""
+        descriptions = []
+        for key, graph in AVAILABLE_GRAPHS.items():
+            lesson_support = "✓" if graph["supports_lesson_filter"] else "✗"
+            area_support = "✓" if graph["supports_area_filter"] else "✗"
+            descriptions.append(
+                f"- {key}: {graph['description']} "
+                f"(Lesson Filter: {lesson_support}, Area Filter: {area_support})"
+            )
+        return "\n".join(descriptions)
+
     def _get_lesson_names(self, file_ids: List[str]) -> str:
         """Get formatted lesson names from file_ids"""
         if not file_ids:
@@ -298,15 +306,14 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
         - class_period: "beginning", "middle", "end", or null
         - transformed_query: Enhanced query for better agent response
         - needs_graph: Boolean indicating if graph is needed
-        - graph_type: Type of graph to generate
-        - graph_reason: Explanation of why graph helps
+        - graph_types: Array of graph objects with type and reason
         - lesson_filter: Array of lesson references for filtering
         - area_filter: Array of teaching area codes for filtering
         """
         try:
             print(f"DEBUG: Starting analyze_intent for message: {user_message}")
             
-            # Build message history
+            # Build message history for LLM
             print("DEBUG: Building message history...")
             messages = await self._build_message_history(conversation_history or [], user_message, file_ids)
             
@@ -333,7 +340,7 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
                     "class_period": None,
                     "transformed_query": user_message,
                     "needs_graph": False,
-                    "graph_types": None,
+                    "graph_types": [],
                     "lesson_filter": [],
                     "area_filter": []
                 }
@@ -351,27 +358,6 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
             if area_filter:
                 # Map natural language to area codes if needed
                 area_filter = self._map_natural_language_to_area_codes(area_filter)
-            
-            print("DEBUG: Processing graph types...")
-            # Validate graph type if needed
-            graph_types = intent_analysis.get("graph_types")
-            if graph_types:
-                print(f"DEBUG: Found graph_types: {graph_types}")
-                # Ensure all graph types are valid
-                valid_graph_types = []
-                for graph_obj in graph_types:
-                    graph_type = graph_obj.get("type")
-                    print(f"DEBUG: Validating graph type: {graph_type}")
-                    if graph_type and validate_graph_type(graph_type):
-                        valid_graph_types.append(graph_obj)
-                        print(f"DEBUG: Graph type {graph_type} is valid")
-                    else:
-                        print(f"DEBUG: Graph type {graph_type} is invalid")
-                intent_analysis["graph_types"] = valid_graph_types
-                intent_analysis["needs_graph"] = True # If any graph type is valid, needs_graph is true
-            else:
-                print("DEBUG: No graph_types found, setting needs_graph to false")
-                intent_analysis["needs_graph"] = False
             
             print("DEBUG: Updating filters...")
             # Update with processed filters
@@ -391,7 +377,7 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
                 "class_period": None,
                 "transformed_query": user_message,
                 "needs_graph": False,
-                "graph_types": None,
+                "graph_types": [],
                 "lesson_filter": [],
                 "area_filter": []
             }
@@ -402,58 +388,82 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
             return []
         
         try:
-            # Get file information from database
-            result = await self.supabase.table("files").select("file_id, stored_filename").in_("file_id", file_ids).execute()
-            data = result.data
-            error = result.error
+            print(f"DEBUG: Mapping lesson references: {lesson_references} to file_ids: {file_ids}")
             
-            if error or not data:
+            # Get file information from database - Supabase is synchronous, not async
+            result = self.supabase.table("files").select("file_id, stored_filename").in_("file_id", file_ids).execute()
+            
+            print(f"DEBUG: Supabase mapping result: {result.data}")
+            
+            if not result.data:
+                print("DEBUG: No data returned from Supabase")
                 return []
             
-            file_info = {f["stored_filename"]: f["file_id"] for f in data}
+            # Create mapping of filename to file_id
+            file_mapping = {f["stored_filename"]: f["file_id"] for f in result.data}
+            print(f"DEBUG: File mapping: {file_mapping}")
             
             mapped_ids = []
+            
             for ref in lesson_references:
+                print(f"DEBUG: Processing lesson reference: {ref}")
+                
+                # Direct filename match (most likely case from LLM)
+                if ref in file_mapping:
+                    mapped_ids.append(str(file_mapping[ref]))  # Convert to string
+                    print(f"DEBUG: Direct match found: {ref} -> {file_mapping[ref]}")
+                    continue
+                
+                # Fallback: partial matching for natural language references
                 ref_lower = ref.lower()
+                matched = False
                 
-                # Handle numeric references like "lesson 1", "first lesson"
-                if "lesson" in ref_lower or "first" in ref_lower or "second" in ref_lower or "third" in ref_lower:
-                    # For now, return all file_ids as we can't easily map lesson numbers
-                    # In a real implementation, you'd need to store lesson order/sequence
-                    mapped_ids.extend(file_ids)
-                    break
-                
-                # Handle specific lesson names
-                for filename, file_id in file_info.items():
+                for filename, file_id in file_mapping.items():
                     if ref_lower in filename.lower():
-                        mapped_ids.append(file_id)
+                        mapped_ids.append(str(file_id))  # Convert to string
+                        print(f"DEBUG: Partial match found: {ref} -> {filename} -> {file_id}")
+                        matched = True
                         break
+                
+                if not matched:
+                    print(f"DEBUG: No match found for reference: {ref}")
             
-            # If no specific mapping found, return all file_ids (default behavior)
-            if not mapped_ids:
-                return []
-            
+            print(f"DEBUG: Final mapped_ids: {mapped_ids}")
             return list(set(mapped_ids))  # Remove duplicates
             
         except Exception as e:
+            print(f"ERROR in _map_lesson_references_to_file_ids: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             return []
 
     def _map_natural_language_to_area_codes(self, area_references: List[str]) -> List[str]:
         """Map natural language area references to area codes"""
         if not area_references:
+            print("DEBUG: No area references to map")
             return []
         
+        print(f"DEBUG: Mapping area references: {area_references}")
+        
         mapped_codes = []
+        available_codes = get_available_area_codes()
+        
         for ref in area_references:
+            print(f"DEBUG: Processing area reference: {ref}")
+            
             # Check if it's already an area code
-            if ref in get_available_area_codes():
+            if ref in available_codes:
                 mapped_codes.append(ref)
+                print(f"DEBUG: Direct area code match: {ref}")
             else:
                 # Try to map natural language
                 codes = map_natural_language_to_area_codes(ref)
+                print(f"DEBUG: Natural language mapping for '{ref}': {codes}")
                 mapped_codes.extend(codes)
         
-        return list(set(mapped_codes))  # Remove duplicates
-
+        final_codes = list(set(mapped_codes))
+        print(f"DEBUG: Final mapped area codes: {final_codes}")
+        return final_codes
+    
 # Global instance
 intent_analyzer = IntentAnalyzer()
