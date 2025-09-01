@@ -253,6 +253,18 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
         # Combine base prompt with dynamic section
         return self.system_prompt + "\n\n" + lesson_section
 
+    def _get_graph_descriptions_for_prompt(self) -> str:
+        """Get formatted graph descriptions for LLM prompt"""
+        descriptions = []
+        for key, graph in AVAILABLE_GRAPHS.items():
+            lesson_support = "✓" if graph["supports_lesson_filter"] else "✗"
+            area_support = "✓" if graph["supports_area_filter"] else "✗"
+            descriptions.append(
+                f"- {key}: {graph['description']} "
+                f"(Lesson Filter: {lesson_support}, Area Filter: {area_support})"
+            )
+        return "\n".join(descriptions)
+
     def _get_lesson_info(self, file_ids: List[str]) -> str:
         """Get formatted lesson information with both file IDs and names for LLM selection"""
         if not file_ids:
@@ -268,9 +280,13 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
             print(f"DEBUG: Result data: {result.data}")
             
             if result.data:
+                # Sort data by file_id (ascending) to ensure consistent ordering
+                sorted_data = sorted(result.data, key=lambda x: x["file_id"])
+                print(f"DEBUG: Sorted data by file_id: {sorted_data}")
+                
                 # Format lesson info for LLM prompt
                 lesson_info_lines = []
-                for file_data in result.data:
+                for file_data in sorted_data:
                     file_id = file_data["file_id"]
                     filename = file_data["stored_filename"]
                     lesson_info_lines.append(f"- File ID: {file_id}, Filename: {filename}")
