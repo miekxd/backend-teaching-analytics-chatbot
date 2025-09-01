@@ -23,5 +23,5 @@ class UnifiedResponse(BaseModel):
     graph_reason: Optional[str] = None
     # Multiple graphs field (new)
     graph_types: Optional[List[GraphInfo]] = None
-    lesson_filter: List[str] = []  # Array of file_ids for lesson filtering
+    lesson_filter: List[int] = []  # Array of file_ids for lesson filtering
     area_filter: List[str] = []    # Array of teaching area codes for area filtering

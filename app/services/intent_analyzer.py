@@ -225,21 +225,21 @@ When conversation history is available:
 
     async def _build_dynamic_system_prompt(self, file_ids: List[str]) -> str:
         """Build dynamic system prompt with current lesson information"""
-        # Get lesson names from file_ids
-        lesson_names = self._get_lesson_names(file_ids)
+        # Get lesson info from file_ids
+        lesson_info = self._get_lesson_info(file_ids)
         
         # Build the dynamic section with clear mapping instructions
-        lesson_section = f"""Available lessons: {lesson_names}
+        lesson_section = f"""Available lessons:
+{lesson_info}
 
-IMPORTANT: When users reference lessons, map their natural language to the exact lesson names above:
-- "lesson 1", "first lesson" → Use the first lesson name from the list
-- "lesson 2", "second lesson" → Use the second lesson name from the list  
-- "lesson 3", "third lesson" → Use the third lesson name from the list
-- "Science lesson from July 9th" → Use "Science_Lesson1(09-07-2024).xlsx"
-- "Science lesson from July 23rd" → Use "Science_Lesson2(23-07-2024).xlsx"
-- "Science lesson from July 30th" → Use "Science_Lesson3(30-07-2024).xlsx"
+IMPORTANT: When users reference specific lessons, you MUST include the corresponding file IDs in lesson_filter:
+- "lesson 1", "first lesson" → Find the lesson with the earliest date in the filename and use its File ID
+- "lesson 2", "second lesson" → Find the lesson with the middle date and use its File ID  
+- "lesson 3", "third lesson" → Find the lesson with the latest date and use its File ID
+- "all lessons" or no specific lesson mentioned → Use empty array [] to include all lessons
 
-ALWAYS use the exact lesson names in lesson_filter when users reference specific lessons.
+CRITICAL: lesson_filter must contain File IDs (numbers), NOT filenames. 
+Example: lesson_filter: [37] (for one lesson) or lesson_filter: [37, 36] (for multiple lessons)
 
 <output_requirements>
 ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
@@ -248,7 +248,7 @@ ENSURE THAT YOU ALWAYS RESPOND with VALID JSON containing:
 - transformed_query: string (better query to help with response and RAG) DO NOT MENTION GRAPH OR VISUALIZE
 - needs_graph: boolean (true if visualization would help answer the query)
 - graph_types: array of graph objects with type and reason (e.g., [{{"type": "teaching_area_distribution", "reason": "Shows distribution across areas"}}, {{"type": "utterance_timeline", "reason": "Shows patterns over time"}}]) or null
-- lesson_filter: array of lesson references (e.g., ["Science_Lesson1(09-07-2024).xlsx", "Science_Lesson2(23-07-2024).xlsx"]) or empty array for all lessons
+- lesson_filter: array of file IDs (e.g., [37, 36]) or empty array for all lessons
 - area_filter: array of teaching area codes (e.g., ["3.3", "3.4"]) or empty array for all areas
 
 Note: For single graphs, use graph_types with one object. For multiple graphs, use graph_types with multiple objects. The old graph_type and graph_reason fields are deprecated.
@@ -257,31 +257,37 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
         # Combine base prompt with dynamic section
         return self.system_prompt + "\n\n" + lesson_section
 
-    def _get_lesson_names(self, file_ids: List[str]) -> str:
-        """Get formatted lesson names from file_ids"""
+    def _get_lesson_info(self, file_ids: List[str]) -> str:
+        """Get formatted lesson information with both file IDs and names for LLM selection"""
         if not file_ids:
             print(f"DEBUG: No file_ids provided")
             return "No lessons available"
         
         try:
-            print(f"DEBUG: Fetching lesson names for file_ids: {file_ids}")
+            print(f"DEBUG: Fetching lesson info for file_ids: {file_ids}")
             # Get file information from database (no await needed for Supabase)
-            result = self.supabase.table("files").select("stored_filename").in_("file_id", file_ids).execute()
+            result = self.supabase.table("files").select("file_id, stored_filename").in_("file_id", file_ids).execute()
             
             print(f"DEBUG: Supabase result: {result}")
             print(f"DEBUG: Result data: {result.data}")
             
             if result.data:
-                # Extract lesson names and format them
-                lesson_names = [f["stored_filename"] for f in result.data]
-                print(f"DEBUG: Extracted lesson names: {lesson_names}")
-                return ", ".join(lesson_names)
+                # Format lesson info for LLM prompt
+                lesson_info_lines = []
+                for file_data in result.data:
+                    file_id = file_data["file_id"]
+                    filename = file_data["stored_filename"]
+                    lesson_info_lines.append(f"- File ID: {file_id}, Filename: {filename}")
+                
+                lesson_info = "\n".join(lesson_info_lines)
+                print(f"DEBUG: Formatted lesson info: {lesson_info}")
+                return lesson_info
             else:
                 print(f"DEBUG: No data in result")
                 return "No lessons available"
             
         except Exception as e:
-            print(f"Error retrieving lesson names: {e}")
+            print(f"Error retrieving lesson info: {e}")
             return "No lessons available"
 
     async def analyze_intent(
@@ -339,11 +345,25 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
                 }
             
             print("DEBUG: Processing lesson filtering...")
-            # Validate and process lesson filtering
+            # Get lesson filter directly from LLM (should contain file IDs)
             lesson_filter = intent_analysis.get("lesson_filter", [])
+            print(f"DEBUG: Lesson filter from LLM: {lesson_filter}")
+            
+            # Validate that lesson_filter contains valid file IDs
             if lesson_filter:
-                # Map lesson references to actual file_ids
-                lesson_filter = await self._map_lesson_references_to_file_ids(lesson_filter, file_ids)
+                # Ensure all items in lesson_filter are integers (file IDs)
+                validated_filter = []
+                for item in lesson_filter:
+                    if isinstance(item, int):
+                        validated_filter.append(item)
+                    elif isinstance(item, str) and item.isdigit():
+                        validated_filter.append(int(item))
+                    else:
+                        print(f"DEBUG: Invalid lesson filter item: {item} (not a file ID)")
+                lesson_filter = validated_filter
+                print(f"DEBUG: Validated lesson_filter: {lesson_filter}")
+            else:
+                print("DEBUG: No lesson_filter found in LLM response")
             
             print("DEBUG: Processing area filtering...")
             # Validate and process area filtering
@@ -374,6 +394,8 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
                 intent_analysis["needs_graph"] = False
             
             print("DEBUG: Updating filters...")
+            print(f"DEBUG: Final lesson_filter before update: {lesson_filter}")
+            print(f"DEBUG: Final area_filter before update: {area_filter}")
             # Update with processed filters
             intent_analysis["lesson_filter"] = lesson_filter
             intent_analysis["area_filter"] = area_filter
@@ -396,47 +418,7 @@ Note: For single graphs, use graph_types with one object. For multiple graphs, u
                 "area_filter": []
             }
 
-    async def _map_lesson_references_to_file_ids(self, lesson_references: List[str], file_ids: List[str]) -> List[str]:
-        """Map lesson references to actual file IDs"""
-        if not lesson_references or not file_ids:
-            return []
-        
-        try:
-            # Get file information from database
-            result = await self.supabase.table("files").select("file_id, stored_filename").in_("file_id", file_ids).execute()
-            data = result.data
-            error = result.error
-            
-            if error or not data:
-                return []
-            
-            file_info = {f["stored_filename"]: f["file_id"] for f in data}
-            
-            mapped_ids = []
-            for ref in lesson_references:
-                ref_lower = ref.lower()
-                
-                # Handle numeric references like "lesson 1", "first lesson"
-                if "lesson" in ref_lower or "first" in ref_lower or "second" in ref_lower or "third" in ref_lower:
-                    # For now, return all file_ids as we can't easily map lesson numbers
-                    # In a real implementation, you'd need to store lesson order/sequence
-                    mapped_ids.extend(file_ids)
-                    break
-                
-                # Handle specific lesson names
-                for filename, file_id in file_info.items():
-                    if ref_lower in filename.lower():
-                        mapped_ids.append(file_id)
-                        break
-            
-            # If no specific mapping found, return all file_ids (default behavior)
-            if not mapped_ids:
-                return []
-            
-            return list(set(mapped_ids))  # Remove duplicates
-            
-        except Exception as e:
-            return []
+
 
     def _map_natural_language_to_area_codes(self, area_references: List[str]) -> List[str]:
         """Map natural language area references to area codes"""
