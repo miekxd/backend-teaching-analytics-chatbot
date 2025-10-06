@@ -4,8 +4,9 @@ services:
   nie-backend:
     build: .
     ports:
-      - 8000
+      - "${PORT:-8000}:8000"
     environment:
+      - PORT=${PORT:-8000}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
       - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
@@ -16,7 +17,7 @@ services:
       - AZURE_OPENAI_DEPLOYMENT_GENERAL=${AZURE_OPENAI_DEPLOYMENT_GENERAL}
     volumes:
       # Mount source code for development (comment out for production)
-      - .:/app
+      # - .:/app
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
