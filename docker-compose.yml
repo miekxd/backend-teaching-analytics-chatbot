@@ -15,7 +15,7 @@ services:
       - AZURE_OPENAI_EMBEDDING_DEPLOYMENT=${AZURE_OPENAI_EMBEDDING_DEPLOYMENT}
       - AZURE_OPENAI_DEPLOYMENT_RAG=${AZURE_OPENAI_DEPLOYMENT_RAG}
       - AZURE_OPENAI_DEPLOYMENT_GENERAL=${AZURE_OPENAI_DEPLOYMENT_GENERAL}
-    volumes:
+    # volumes:
       # Mount source code for development (comment out for production)
       # - .:/app
     restart: unless-stopped
