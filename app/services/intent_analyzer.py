@@ -51,7 +51,14 @@ Transform user query into a more effective query for the agents IF:
 - User asks about data visualization
 If prompted with data visualization, intelligently transform the query for comments on the graph. DO NOT prompt your agents to create data visualization.
 Examples: "Show me a graph of xxx" -> "Comment on my xxx throughout the lesson"
-IMPORTANT: DO NOT EXPAND THE SCOPE OF THE QUERY. For example, if user ask for teaching area 1.1, make sure that the transformed query only includes 1.1.
+
+CRITICAL SCOPE PRESERVATION RULES:
+- DO NOT EXPAND THE SCOPE OF THE QUERY
+- If user asks for "1.1", transformed_query must focus ONLY on 1.1
+- If user asks for "3.4", transformed_query must focus ONLY on 3.4
+- If user asks for specific area codes, do NOT add related areas
+- Preserve the exact teaching areas the user specified
+- Only expand scope if user explicitly asks for "all areas" or similar broad terms
 </transform_query>
 
 <forbidden_actions>
@@ -85,11 +92,17 @@ Usage: When user specifies or implies a specific time period in their question
 </available_tools>
 
 <area_filtering>
-Analyze user query for teaching area focus:
+Analyze user query for teaching area focus with STRICT SCOPE PRESERVATION:
+
+PRIORITY 1 - EXPLICIT AREA CODES: If user mentions specific area codes (e.g., "1.1", "3.4", "2.1"), use ONLY those codes and DO NOT expand to related areas.
+
+PRIORITY 2 - NATURAL LANGUAGE MAPPING: Only apply broad natural language mapping when NO explicit area codes are mentioned:
 - "focus on questioning", "just show questioning" → area_filter: ["3.3"]
-- "interaction and collaboration" → area_filter: ["1.1", "3.4"]
-- "motivation and engagement" → area_filter: ["3.2"]
+- "interaction and collaboration" (when no specific codes mentioned) → area_filter: ["1.1", "3.4"]
+- "motivation and engagement" (when no specific codes mentioned) → area_filter: ["3.2"]
 - "all areas" or no specific area mentioned → area_filter: [] (show all areas)
+
+CRITICAL: If user says "1.1" or "analyze 1.1", use area_filter: ["1.1"] ONLY. Do NOT expand to include 3.4 or any other areas.
 
 Available teaching areas: {get_available_area_codes()}
 </area_filtering>
@@ -187,6 +200,7 @@ When conversation history is available:
 - "Show me speaking pace for the first lesson only" → needs_graph: true, graph_types: [{{"type": "wpm_trend", "reason": "Shows speaking pace over time for the first lesson"}}], lesson_filter: ["Science_Lesson1(09-07-2024).xlsx"], area_filter: []
 - "Give me a comprehensive overview of my teaching" → needs_graph: true, graph_types: [{{"type": "total_distribution", "reason": "Shows overall teaching area distribution"}}, {{"type": "utterance_timeline", "reason": "Shows teaching patterns over time"}}], lesson_filter: [], area_filter: []
 - "Show me both the area distribution and my questioning patterns" → needs_graph: true, graph_types: [{{"type": "teaching_area_distribution", "reason": "Shows distribution across teaching areas"}}, {{"type": "utterance_timeline", "reason": "Shows questioning patterns over time"}}], lesson_filter: [], area_filter: ["3.3"]
+- "I want to analyse 1.1 across the lessons? Give a line graph" → needs_graph: true, graph_types: [{{"type": "utterance_timeline", "reason": "Shows 1.1 patterns over time"}}], lesson_filter: [], area_filter: ["1.1"] (ONLY 1.1, do NOT include 3.4)
 </graph_examples>
 
 <time_period_examples>
