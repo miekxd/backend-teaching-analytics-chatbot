@@ -51,6 +51,7 @@ Transform user query into a more effective query for the agents IF:
 - User asks about data visualization
 If prompted with data visualization, intelligently transform the query for comments on the graph. DO NOT prompt your agents to create data visualization.
 Examples: "Show me a graph of xxx" -> "Comment on my xxx throughout the lesson"
+IMPORTANT: DO NOT EXPAND THE SCOPE OF THE QUERY. For example, if user ask for teaching area 1.1, make sure that the transformed query only includes 1.1.
 </transform_query>
 
 <forbidden_actions>
