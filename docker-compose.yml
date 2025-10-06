@@ -5,6 +5,8 @@ services:
     build: .
     ports:
       - "${PORT:-8000}:8000"
+    labels:
+      - "traefik.http.services.nie-backend.loadbalancer.server.port=8000"
     environment:
       - PORT=${PORT:-8000}
       - SUPABASE_URL=${SUPABASE_URL}
