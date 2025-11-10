@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str
     AZURE_OPENAI_DEPLOYMENT_RAG: str
     AZURE_OPENAI_DEPLOYMENT_GENERAL: str
+    YOUTUBE_API_KEY: str  
+    GOOGLE_CUSTOM_SEARCH_API_KEY: str 
+    GOOGLE_CUSTOM_SEARCH_ENGINE_ID: str
+    SEMANTIC_SCHOLAR_API_KEY: str 
 
     class Config:
         env_file = ".env"

@@ -152,6 +152,7 @@ Approach:
 - Clearly indicate when using lesson evidence vs general expertise
 </output_requirements>"""
 
+        
         # Prompt template for unified responses
         self.unified_prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
@@ -184,7 +185,7 @@ Based on the query analysis above:
 
 Adapt your response style to:
 - Query type: {query_type}
-- Available context: {"Rich lesson data" if context_chunks != "No detailed transcript chunks available." else "Limited lesson data"}
+- Available context: {context_availability}
 - Recommended approach: {response_mode}
 
 Always maintain a supportive, expert coaching tone and reference Singapore Teaching Practice areas when relevant.
@@ -473,6 +474,13 @@ Always maintain a supportive, expert coaching tone and reference Singapore Teach
                         messages.append(HumanMessage(content=content))
                     elif role == "assistant" and content:
                         messages.append(AIMessage(content=content))
+
+                context_availability = (
+                    "Rich lesson data" 
+                    if context_chunks != "No detailed transcript chunks available." 
+                    else "Limited lesson data"
+                )
+
                 
                 # Add current message with full context and analysis
                 current_with_context = f"""<available_context>
@@ -504,7 +512,7 @@ Based on the query analysis above:
 
 Adapt your response style to:
 - Query type: {query_analysis["query_type"]}
-- Available context: {"Rich lesson data" if context_chunks != "No detailed transcript chunks available." else "Limited lesson data"}
+- Available context: {context_availability}
 - Recommended approach: {query_analysis["response_mode"]}
 
 Always maintain a supportive, expert coaching tone and reference Singapore Teaching Practice areas when relevant.
@@ -514,6 +522,12 @@ Always maintain a supportive, expert coaching tone and reference Singapore Teach
                 response = await self.llm.ainvoke(messages)
                 return response.content
             else:
+
+                context_availability = (
+                    "Rich lesson data" 
+                    if context_chunks != "No detailed transcript chunks available." 
+                    else "Limited lesson data"
+                )
                 # Use unified chain
                 response_text = await self.unified_chain.ainvoke({
                     "lesson_summary": lesson_summaries,
@@ -521,7 +535,8 @@ Always maintain a supportive, expert coaching tone and reference Singapore Teach
                     "query_type": query_analysis["query_type"],
                     "lesson_relevance": query_analysis["lesson_relevance"],
                     "response_mode": query_analysis["response_mode"],
-                    "question": user_message
+                    "question": user_message,
+                    "context_availability": context_availability
                 })
                 return response_text
             
@@ -589,6 +604,11 @@ Always maintain a supportive, expert coaching tone and reference Singapore Teach
                         messages.append(AIMessage(content=content))
                 
                 # Add current message with full context and analysis
+                context_availability = (
+                    "Rich lesson data" 
+                    if context_chunks != "No detailed transcript chunks available." 
+                    else "Limited lesson data"
+                )
                 current_with_context = f"""<available_context>
 <lesson_overview>
 {lesson_summaries}
@@ -618,7 +638,7 @@ Based on the query analysis above:
 
 Adapt your response style to:
 - Query type: {query_analysis["query_type"]}
-- Available context: {"Rich lesson data" if context_chunks != "No detailed transcript chunks available." else "Limited lesson data"}
+- Available context: {context_availability}
 - Recommended approach: {query_analysis["response_mode"]}
 
 Always maintain a supportive, expert coaching tone and reference Singapore Teaching Practice areas when relevant.
@@ -634,13 +654,19 @@ Always maintain a supportive, expert coaching tone and reference Singapore Teach
                 # Use streaming chain
                 streaming_chain = self.unified_prompt | streaming_llm | self.output_parser
                 
+                context_availability = (
+                    "Rich lesson data" 
+                    if context_chunks != "No detailed transcript chunks available." 
+                    else "Limited lesson data"
+                )
                 async for chunk in streaming_chain.astream({
                     "lesson_summary": lesson_summaries,
                     "context_chunks": context_chunks,
                     "query_type": query_analysis["query_type"],
                     "lesson_relevance": query_analysis["lesson_relevance"],
                     "response_mode": query_analysis["response_mode"],
-                    "question": user_message
+                    "question": user_message,
+                    "context_availability": context_availability
                 }):
                     if chunk:
                         yield chunk
@@ -648,5 +674,19 @@ Always maintain a supportive, expert coaching tone and reference Singapore Teach
         except Exception as e:
             yield f"I apologize, but I encountered an error while processing your request: {str(e)}"
 
-# Create instance
-unified_assistant = UnifiedTeachingAssistant()
+_unified_assistant = None
+
+def get_unified_assistant():
+    """Get or create unified assistant instance (lazy loading)"""
+    global _unified_assistant
+    if _unified_assistant is None:
+        _unified_assistant = UnifiedTeachingAssistant()
+    return _unified_assistant
+
+# For backward compatibility
+class _UnifiedAssistantProxy:
+    """Proxy that lazily loads the real assistant"""
+    def __getattr__(self, name):
+        return getattr(get_unified_assistant(), name)
+
+unified_assistant = _UnifiedAssistantProxy()

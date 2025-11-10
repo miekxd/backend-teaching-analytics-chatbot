@@ -23,7 +23,7 @@ class GeneralTeachingAssistant:
     
     def __init__(self):
         # Supabase client for accessing file summaries
-        self.supabase = get_supabase_client()
+        self.supabase = get_supabase_client() 
         
         # System prompt for general teaching assistance
         self.system_prompt = """You are a general teaching chatbot assistant designed to provide helpful, supportive guidance to Singaporean teachers based on their lesson context and questions according to the Singapore Teaching Framework.
